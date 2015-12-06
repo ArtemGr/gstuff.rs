@@ -1,0 +1,15 @@
+[package]
+name = "gstuff"
+version = "0.0.1"
+authors = ["ArtemGr <artemciy@gmail.com>"]
+
+description = "Small macro and trinkets that make my life easier."
+repository = "https://github.com/ArtemGr/gstuff.rs"
+#readme = "README.md"
+#keywords = ["web", "server"]
+license = "Apache-2.0"
+
+[lib]
+name = "gstuff"
+path = "gstuff.rs"
+doctest = false
