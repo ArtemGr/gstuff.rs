@@ -1,3 +1,5 @@
+use std::path::Path;
+
 /// Shortcut to path->filename conversion.
 ///
 /// Returns the unchanged `path` if there is a character encoding error or something.
@@ -8,26 +10,26 @@ pub fn filename<'a> (path: &'a str) -> &'a str {
       None => path},
     None => path}}
 
-// A trick to use the `try_s` macro from both outside and inside the crate.
-mod glim_util {pub fn filename<'a> (path: &'a str) -> &'a str {::filename (path)}}
+// A trick to use the `try_s` macro from both the outside and inside of the crate.
+//mod gstuff {pub fn filename<'a> (path: &'a str) -> &'a str {::filename (path)}}
 
 /// Returns on error, converting the `Err` value to `String` and prepending the current location.
 ///
 /// cf. http://www.reddit.com/r/rust/comments/29wwzw/error_handling_and_result_types/cipcm9a
 #[macro_export] macro_rules! try_s {
-  ($e: expr) => {match $e {Ok (ok) => ok, Err (err) => {return Err (format! ("{}:{}] {}", ::glim_util::filename (file!()), line!(), err));}}}}
+  ($e: expr) => {match $e {Ok (ok) => ok, Err (err) => {return Err (format! ("{}:{}] {}", ::gstuff::filename (file!()), line!(), err));}}}}
 
 // Like `try_s`, but takes a reference.
 #[macro_export] macro_rules! try_sp {
   ($e: expr) => {match $e {&Ok (ref ok) => ok,
-    &Err (ref err) => {return Err (format! ("{}:{}] {:?}", ::glim_util::filename (file!()), line!(), err));}}}}
+    &Err (ref err) => {return Err (format! ("{}:{}] {:?}", ::gstuff::filename (file!()), line!(), err));}}}}
 
 /// Returns a `Err(String)`, prepending the current location (file name and line number) to the string.
 ///
 /// Examples: `ERR! ("too bad")`; `ERR! ("{}", foo)`;
 #[macro_export] macro_rules! ERR {
-  ($format: expr, $($args: tt)+) => {Err (format! (concat! ("{}:{}] ", $format), ::glim_util::filename (file!()), line!(), $($args)+))};
-  ($format: expr) => {Err (format! (concat! ("{}:{}] ", $format), ::glim_util::filename (file!()), line!()))}}
+  ($format: expr, $($args: tt)+) => {Err (format! (concat! ("{}:{}] ", $format), ::gstuff::filename (file!()), line!(), $($args)+))};
+  ($format: expr) => {Err (format! (concat! ("{}:{}] ", $format), ::gstuff::filename (file!()), line!()))}}
 
 /// A helper to build a string on the stack.
 ///
