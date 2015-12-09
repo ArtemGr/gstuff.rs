@@ -46,7 +46,7 @@ pub fn filename<'a> (path: &'a str) -> &'a str {
 ///         write! (foobar, "bar") .unwrap();
 ///     });
 ///
-/// Alternatives: https://crates.io/crates/string-wrapper; https://crates.io/crates/stack.
+/// Alternatives: https://crates.io/crates/stack.
 #[macro_export] macro_rules! gstring {($array: ident, $code: block) => {{
   let end = {
     let mut $array = ::std::io::Cursor::new (&mut $array[..]);
