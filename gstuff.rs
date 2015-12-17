@@ -42,8 +42,8 @@ pub fn filename<'a> (path: &'a str) -> &'a str {
 ///     use std::io::Write;
 ///     let mut foobar: [u8; 128] = unsafe {std::mem::uninitialized()};
 ///     let foobar = gstring! (foobar, {
-///         write! (foobar, "foo") .unwrap();
-///         write! (foobar, "bar") .unwrap();
+///         write! (foobar, "foo") .expect ("!write");
+///         write! (foobar, "bar") .expect ("!write");
 ///     });
 ///
 /// Alternatives: https://crates.io/crates/stack.
