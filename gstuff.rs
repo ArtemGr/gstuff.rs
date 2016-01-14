@@ -54,3 +54,16 @@ pub fn filename<'a> (path: &'a str) -> &'a str {
     $code;
     $array.position() as usize};
   unsafe {::std::str::from_utf8_unchecked (&$array[0..end])}}}}
+
+/// Takes a netstring from the front of the slice.
+///
+/// Returns the unpacked netstring and the remainder of the slice.
+fn netstring (at: &[u8]) -> Result<(&[u8], &[u8]), String> {
+  let length_end = match at.iter().position (|&ch| ch < b'0' || ch > b'9') {Some (l) if l > 0 => l, _ => return ERR! ("No len.")};
+  match at.get (length_end) {Some (&ch) if ch == b':' => (), _ => return ERR! ("No colon.")};
+  let length = unsafe {from_utf8_unchecked (&at[0 .. length_end])};
+  let length: usize = try_s! (length.parse());
+  let bulk_pos = 0 + length_end + 1;
+  let bulk_end = bulk_pos + length;
+  match at.get (bulk_end) {Some (&ch) if ch == b',' => (), _ => return ERR! ("No comma.")}
+  Ok ((&at[bulk_pos .. bulk_end], &at[bulk_end + 1 ..]))}
