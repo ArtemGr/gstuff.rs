@@ -76,8 +76,8 @@ pub fn netstring (at: &[u8]) -> Result<(&[u8], &[u8]), String> {
 
 /// Wraps `gethostname` to fetch the current hostname into a temporary buffer.
 #[cfg(unix)]
-pub fn with_hostname (visitor: &mut FnMut (&[u8])) -> Result<(), io::Error> {
-  use libc::{c_int, c_char, size_t, gethostname};  // http://man7.org/linux/man-pages/man2/gethostname.2.html
+pub fn with_hostname (visitor: &mut FnMut (&[u8])) -> Result<(), std::io::Error> {
+  use libc::{size_t, gethostname};  // http://man7.org/linux/man-pages/man2/gethostname.2.html
   use std::ffi::CStr;
   use std::io;
 
@@ -92,4 +92,4 @@ pub fn with_hostname (visitor: &mut FnMut (&[u8])) -> Result<(), io::Error> {
 #[cfg(unix)] #[test]
 fn test_hostname() {
   let mut hostname = String::new();
-  with_hostname (|bytes| hostname = String::from_utf8_lossy (bytes));}
+  with_hostname (&mut |bytes| hostname = String::from_utf8_lossy (bytes) .into_owned()) .unwrap();}
