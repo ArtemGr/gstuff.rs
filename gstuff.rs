@@ -1,3 +1,6 @@
+#![feature(libc)]
+extern crate libc;
+
 use std::path::Path;
 use std::str::from_utf8_unchecked;
 
@@ -70,3 +73,23 @@ pub fn netstring (at: &[u8]) -> Result<(&[u8], &[u8]), String> {
   let bulk_end = bulk_pos + length;
   match at.get (bulk_end) {Some (&ch) if ch == b',' => (), _ => return ERR! ("No comma.")}
   Ok ((&at[bulk_pos .. bulk_end], &at[bulk_end + 1 ..]))}
+
+/// Wraps `gethostname` to fetch the current hostname into a temporary buffer.
+#[cfg(unix)]
+pub fn with_hostname (visitor: &mut FnMut (&[u8])) -> Result<(), io::Error> {
+  use libc::{c_int, c_char, size_t, gethostname};  // http://man7.org/linux/man-pages/man2/gethostname.2.html
+  use std::ffi::CStr;
+  use std::io;
+
+  let mut buf = [0; 128];
+  let rc = unsafe {gethostname (buf.as_mut_ptr(), (buf.len() - 1) as size_t)};
+  if rc == 0 {
+    let cs = unsafe {CStr::from_ptr (buf.as_ptr())};
+    Ok (visitor (cs.to_bytes()))
+  } else {
+    Err (io::Error::last_os_error())}}
+
+#[cfg(unix)] #[test]
+fn test_hostname() {
+  let mut hostname = String::new();
+  with_hostname (|bytes| hostname = String::from_utf8_lossy (bytes));}
