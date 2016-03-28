@@ -1,6 +1,8 @@
 #![feature(libc)]
 extern crate libc;
 
+use std::fs;
+use std::io::Read;
 use std::path::Path;
 use std::str::from_utf8_unchecked;
 
@@ -95,7 +97,7 @@ fn test_hostname() {
   with_hostname (&mut |bytes| hostname = String::from_utf8_lossy (bytes) .into_owned()) .unwrap();}
 
 /// Read contents of the file into a String.
-fn slurp (path: &AsRef<Path>) -> String {
+pub fn slurp (path: &AsRef<Path>) -> String {
   let mut file = match fs::File::open (path) {
     Ok (f) => f,
     Err (ref err) if err.kind() == std::io::ErrorKind::NotFound => return String::new(),
