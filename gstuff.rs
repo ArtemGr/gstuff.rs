@@ -1,11 +1,11 @@
-#![feature(libc)]
+#![feature(libc,question_mark)]
 extern crate libc;
 
 use std::fs;
 use std::io;
 use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::str::from_utf8_unchecked;
 
 /// Shortcut to path->filename conversion.
@@ -115,10 +115,10 @@ pub fn slurp (path: &AsRef<Path>) -> String {
 ///
 /// If the command failed then returns it's stderr
 pub fn slurp_prog (command: &str) -> Result<String, String> {
-  let output = match Command::new ("sh") .arg ("-c") .arg (command) .output() {
+  let output = match Command::new ("bash") .arg ("-c") .arg (command) .output() {
     Ok (output) => output,
     Err (ref err) if err.kind() == io::ErrorKind::NotFound => {  // "sh" was not found, try a different name.
-      try_s! (Command::new ("bash") .arg ("-c") .arg (command) .output())},
+      try_s! (Command::new ("sh") .arg ("-c") .arg (command) .output())},
     Err (err) => return ERR! ("{}", err)};
 
   let combined_output: String = if output.stderr.is_empty() {
@@ -136,3 +136,9 @@ pub fn slurp_prog (command: &str) -> Result<String, String> {
 #[test] fn test_slurp_prog() {
   let foo = match slurp_prog ("echo foo") {Ok (foo) => foo, Err (err) => panic! ("{}", err)};
   assert_eq! (foo.trim(), "foo");}
+
+/// Run a command, printing it first. Stdout and stderr are forwarded through (`inherit`).
+pub fn cmd (cmd: &str) -> Result<(), String> {
+  println! ("$ {}", cmd);
+  let status = try_s! (Command::new ("bash") .arg ("-c") .arg (cmd) .stdout (Stdio::inherit()) .stderr (Stdio::inherit()) .status());
+  if !status.success() {Err (format! ("Command returned an error status: {}", status))} else {Ok(())}}
