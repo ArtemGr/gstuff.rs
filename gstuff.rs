@@ -2,8 +2,10 @@
 extern crate libc;
 
 use std::fs;
+use std::io;
 use std::io::Read;
 use std::path::Path;
+use std::process::Command;
 use std::str::from_utf8_unchecked;
 
 /// Shortcut to path->filename conversion.
@@ -91,17 +93,46 @@ pub fn with_hostname (visitor: &mut FnMut (&[u8])) -> Result<(), std::io::Error>
   } else {
     Err (io::Error::last_os_error())}}
 
-#[cfg(unix)] #[test]
-fn test_hostname() {
+#[cfg(unix)] #[test] fn test_hostname() {
   let mut hostname = String::new();
   with_hostname (&mut |bytes| hostname = String::from_utf8_lossy (bytes) .into_owned()) .unwrap();}
 
 /// Read contents of the file into a String.
+///
+/// Returns an empty string if the file is not present under the given path.
 pub fn slurp (path: &AsRef<Path>) -> String {
   let mut file = match fs::File::open (path) {
     Ok (f) => f,
-    Err (ref err) if err.kind() == std::io::ErrorKind::NotFound => return String::new(),
+    Err (ref err) if err.kind() == io::ErrorKind::NotFound => return String::new(),
     Err (err) => panic! ("Can't open {:?}: {}", path.as_ref(), err)};
   let mut buf = String::new();
   file.read_to_string (&mut buf) .expect ("!read");
   buf}
+
+/// Runs a command in a shell, returning stderr+stdout on success.
+///
+/// Sometimes we need something simpler than constructing a Command.
+///
+/// If the command failed then returns it's stderr
+pub fn slurp_prog (command: &str) -> Result<String, String> {
+  let output = match Command::new ("sh") .arg ("-c") .arg (command) .output() {
+    Ok (output) => output,
+    Err (ref err) if err.kind() == io::ErrorKind::NotFound => {  // "sh" was not found, try a different name.
+      try_s! (Command::new ("bash") .arg ("-c") .arg (command) .output())},
+    Err (err) => return ERR! ("{}", err)};
+
+  let combined_output: String = if output.stderr.is_empty() {
+    try_s! (String::from_utf8 (output.stdout))
+  } else if output.stdout.is_empty() {
+    try_s! (String::from_utf8 (output.stderr))
+  } else {
+    let mut buf = String::with_capacity (output.stderr.len() + output.stdout.len());
+    buf.push_str (try_s! (std::str::from_utf8 (&output.stderr[..])));
+    buf.push_str (try_s! (std::str::from_utf8 (&output.stdout[..])));
+    buf};
+
+  if output.status.success() {Ok (combined_output)} else {Err (combined_output)}}
+
+#[test] fn test_slurp_prog() {
+  let foo = match slurp_prog ("echo foo") {Ok (foo) => foo, Err (err) => panic! ("{}", err)};
+  assert_eq! (foo.trim(), "foo");}
