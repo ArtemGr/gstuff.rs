@@ -93,3 +93,13 @@ pub fn with_hostname (visitor: &mut FnMut (&[u8])) -> Result<(), std::io::Error>
 fn test_hostname() {
   let mut hostname = String::new();
   with_hostname (&mut |bytes| hostname = String::from_utf8_lossy (bytes) .into_owned()) .unwrap();}
+
+/// Read contents of the file into a String.
+fn slurp (path: &AsRef<Path>) -> String {
+  let mut file = match fs::File::open (path) {
+    Ok (f) => f,
+    Err (ref err) if err.kind() == std::io::ErrorKind::NotFound => return String::new(),
+    Err (err) => panic! ("Can't open {:?}: {}", path.as_ref(), err)};
+  let mut buf = String::new();
+  file.read_to_string (&mut buf) .expect ("!read");
+  buf}
