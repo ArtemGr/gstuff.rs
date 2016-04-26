@@ -1,6 +1,7 @@
 #![feature(libc,question_mark)]
 extern crate libc;
 
+use std::any::Any;
 use std::fs;
 use std::io;
 use std::io::Read;
@@ -142,3 +143,9 @@ pub fn cmd (cmd: &str) -> Result<(), String> {
   println! ("$ {}", cmd);
   let status = try_s! (Command::new ("bash") .arg ("-c") .arg (cmd) .stdout (Stdio::inherit()) .stderr (Stdio::inherit()) .status());
   if !status.success() {Err (format! ("Command returned an error status: {}", status))} else {Ok(())}}
+
+/// Useful with panic handlers.
+pub fn any_to_str<'a> (message: &'a Box<Any + Send + 'static>) -> Option<&'a str> {
+  if let Some (message) = message.downcast_ref::<&str>() {return Some (message)}
+  if let Some (message) = message.downcast_ref::<String>() {return Some (&message[..])}
+  return None}
