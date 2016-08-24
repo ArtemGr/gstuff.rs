@@ -187,12 +187,6 @@ macro_rules! take_until_find_parse_s (
         IResult::Done (i,o)    => {ret = IResult::Done (i, (&input[0..pos], o)); break},  // Found the remainder!
         IResult::Error(_)      => continue,  // Keep looking.
         IResult::Incomplete(_) => continue}}  // Keep looking.
-
-    if !ret.is_done() {
-      // Last chance. See if subparser accepts an empty string.
-      if let IResult::Done (i,o) = $submac! ("", $($args)*) {
-        ret = IResult::Done (i, (input, o))}}  // Empty remainder was accepted.
-
     ret});
 
   ($i: expr, $starts: expr, $f: expr) => (take_until_find_parse_s! ($i, $starts, call! ($f));););
