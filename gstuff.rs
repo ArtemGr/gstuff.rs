@@ -152,8 +152,9 @@ pub fn any_to_str<'a> (message: &'a Box<Any + Send + 'static>) -> Option<&'a str
 
 // --- nom extensions ---
 
-/// Implements the /(?x) (.*?) (remainder)/ pattern:
+/// Implements the `/(?x) (.*?) (remainder)/` pattern:
 /// looks for remainder first, then returns a tuple with the prefix and the remainder.
+///
 /// Discussion: https://www.reddit.com/r/rust/comments/4yokxd/crash_course_into_nom_kind_of_question/
 #[macro_export]
 macro_rules! take_until_parse_s (
@@ -175,7 +176,28 @@ macro_rules! take_until_parse_s (
 
   ($i: expr, $f: expr) => (take_until_parse_s! ($i, call! ($f));););
 
+/// Uses nom to find all matches of the given `$submac` parser and replace them with the `$submac` results.
+///
+/// For exaple, replacing "foo" with "bar" might look like this:
+///
+///     let bar_bar = parse_replace_s! ("foo bar", map! (tag_s! ("foo"), |_| "bar"));
+#[macro_export]
+macro_rules! parse_replace_s {
+  ($i: expr, $submac: ident! ($($args:tt)*)) => ({
+    let input = $i as &str;
+    let mut output = String::with_capacity (input.len() * 2 + 32);
+    let mut pos = input;
+    while let IResult::Done (tail, (head, evaluation)) = take_until_parse_s! (pos, $submac! ($($args)*)) {
+      output.push_str (head);
+      output.push_str (&evaluation);
+      pos = tail;}
+    output.push_str (pos);
+    output});
+
+  ($i: expr, $f: expr) => (parse_replace! ($i, call! ($f)););}
+
 /// `$starts` is an optional `Pattern` used to optimize the `$remainder` search.
+///
 /// For example, with jetscii: `take_until_find_parse_s! ("foo bar", ascii_chars! ('b'), tag_s! ("bar"))`.
 #[macro_export]
 macro_rules! take_until_find_parse_s (
@@ -190,3 +212,26 @@ macro_rules! take_until_find_parse_s (
     ret});
 
   ($i: expr, $starts: expr, $f: expr) => (take_until_find_parse_s! ($i, $starts, call! ($f));););
+
+/// Uses nom to find all matches of the given `$submac` parser and replace them with the parser's evaluations.
+///
+/// `$starts` is a `Pattern` that is used to speed up the search. It must match the beginning of any `$submac`-compatible substrings.
+///
+/// For exaple, replacing "foo" with "bar" might look like this:
+///
+///     let bar_bar = find_parse_replace_s! ("foo bar", ascii_chars! ('f'), map! (tag_s! ("foo"), |_| "bar"));
+#[macro_export]
+macro_rules! find_parse_replace_s {
+  ($i: expr, $starts: expr, $submac: ident! ($($args:tt)*)) => ({
+    let input = $i as &str;
+    let mut output = String::with_capacity (input.len() * 2 + 32);
+    let mut pos = input;
+    while let IResult::Done (tail, (head, evaluation)) =
+      take_until_find_parse_s! (pos, $starts, $submac! ($($args)*)) {
+        output.push_str (head);
+        output.push_str (&evaluation);
+        pos = tail;}
+    output.push_str (pos);
+    output});
+
+  ($i: expr, $starts: expr, $f: expr) => (find_parse_replace! ($i, $starts, call! ($f)););}
