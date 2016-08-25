@@ -157,33 +157,33 @@ pub fn any_to_str<'a> (message: &'a Box<Any + Send + 'static>) -> Option<&'a str
 /// Discussion: https://www.reddit.com/r/rust/comments/4yokxd/crash_course_into_nom_kind_of_question/
 #[macro_export]
 macro_rules! take_until_parse_s (
-  ($i: expr, $submac: ident! ($($args:tt)*)) => ({
+  ($i: expr, $remainder: ident! ($($args:tt)*)) => ({
     let input = $i as &str;
     let mut ret = IResult::Error (nom::Err::Position (nom::ErrorKind::Custom (0), input));
     for (pos, _) in $i.char_indices() {
-      match $submac! (&input[pos..], $($args)*) {
+      match $remainder! (&input[pos..], $($args)*) {
         IResult::Done (i,o)    => {ret = IResult::Done (i, (&input[0..pos], o)); break},  // Found the remainder!
         IResult::Error(_)      => continue,  // Keep looking.
         IResult::Incomplete(_) => continue}}  // Keep looking.
 
     if !ret.is_done() {
       // Last chance. See if subparser accepts an empty string.
-      if let IResult::Done (i,o) = $submac! ("", $($args)*) {
+      if let IResult::Done (i,o) = $remainder! ("", $($args)*) {
         ret = IResult::Done (i, (input, o))}}  // Empty remainder was accepted.
 
     ret});
 
   ($i: expr, $f: expr) => (take_until_parse_s! ($i, call! ($f));););
 
-/// `$starts` is an optional `Pattern` used to optimize the `$submac` search.
+/// `$starts` is an optional `Pattern` used to optimize the `$remainder` search.
 /// For example, with jetscii: `take_until_find_parse_s! ("foo bar", ascii_chars! ('b'), tag_s! ("bar"))`.
 #[macro_export]
 macro_rules! take_until_find_parse_s (
-  ($i: expr, $starts: expr, $submac: ident! ($($args:tt)*)) => ({
+  ($i: expr, $starts: expr, $remainder: ident! ($($args:tt)*)) => ({
     let input = $i as &str;
     let mut ret = IResult::Error (nom::Err::Position (nom::ErrorKind::Custom (0), input));
     for (pos, _) in $i.match_indices ($starts) {
-      match $submac! (&input[pos..], $($args)*) {
+      match $remainder! (&input[pos..], $($args)*) {
         IResult::Done (i,o)    => {ret = IResult::Done (i, (&input[0..pos], o)); break},  // Found the remainder!
         IResult::Error(_)      => continue,  // Keep looking.
         IResult::Incomplete(_) => continue}}  // Keep looking.
