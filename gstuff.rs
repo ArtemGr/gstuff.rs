@@ -116,7 +116,7 @@ pub fn slurp (path: &AsRef<Path>) -> String {
 ///
 /// If the command failed then returns it's stderr
 pub fn slurp_prog (command: &str) -> Result<String, String> {
-  let output = match Command::new ("bash") .arg ("-c") .arg (command) .output() {
+  let output = match Command::new ("dash") .arg ("-c") .arg (command) .output() {
     Ok (output) => output,
     Err (ref err) if err.kind() == io::ErrorKind::NotFound => {  // "sh" was not found, try a different name.
       try_s! (Command::new ("sh") .arg ("-c") .arg (command) .output())},
@@ -141,7 +141,7 @@ pub fn slurp_prog (command: &str) -> Result<String, String> {
 /// Run a command, printing it first. Stdout and stderr are forwarded through (`inherit`).
 pub fn cmd (cmd: &str) -> Result<(), String> {
   println! ("$ {}", cmd);
-  let status = try_s! (Command::new ("bash") .arg ("-c") .arg (cmd) .stdout (Stdio::inherit()) .stderr (Stdio::inherit()) .status());
+  let status = try_s! (Command::new ("dash") .arg ("-c") .arg (cmd) .stdout (Stdio::inherit()) .stderr (Stdio::inherit()) .status());
   if !status.success() {Err (format! ("Command returned an error status: {}", status))} else {Ok(())}}
 
 /// Useful with panic handlers.
