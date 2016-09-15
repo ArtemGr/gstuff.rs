@@ -194,7 +194,7 @@ macro_rules! parse_replace_s {
     output.push_str (pos);
     output});
 
-  ($i: expr, $f: expr) => (parse_replace! ($i, call! ($f)););}
+  ($i: expr, $f: expr) => (parse_replace_s! ($i, call! ($f)););}
 
 /// `$starts` is an optional `Pattern` used to optimize the `$remainder` search.
 ///
@@ -234,4 +234,4 @@ macro_rules! find_parse_replace_s {
     output.push_str (pos);
     output});
 
-  ($i: expr, $starts: expr, $f: expr) => (find_parse_replace! ($i, $starts, call! ($f)););}
+  ($i: expr, $starts: expr, $f: expr) => (find_parse_replace_s! ($i, $starts, call! ($f)););}
