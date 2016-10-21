@@ -28,9 +28,13 @@ mod gstuff {pub fn filename<'a> (path: &'a str) -> &'a str {super::filename (pat
 ///
 /// cf. http://www.reddit.com/r/rust/comments/29wwzw/error_handling_and_result_types/cipcm9a
 #[macro_export] macro_rules! try_s {
-  ($e: expr) => {match $e {
-    Ok (ok) => ok,
-    Err (err) => {return Err (From::from (format! ("{}:{}] {}", ::gstuff::filename (file!()), line!(), err)));}}}}
+  ($e: expr) => {match $e {Ok (ok) => ok, Err (err) => {return Err (format! ("{}:{}] {}", ::gstuff::filename (file!()), line!(), err));}}}}
+
+/// Returns on error, prepending the current location to a stringified error, then passing the string to `From::from`.
+#[macro_export] macro_rules! try_f {
+   ($e: expr) => {match $e {
+     Ok (ok) => ok,
+     Err (err) => {return Err (From::from (format! ("{}:{}] {}", ::gstuff::filename (file!()), line!(), err)));}}}}
 
 // Like `try_s`, but takes a reference.
 #[macro_export] macro_rules! try_sp {
