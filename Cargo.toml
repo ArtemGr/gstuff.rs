@@ -1,13 +1,11 @@
 [package]
 name = "gstuff"
-version = "0.0.1"
+version = "0.1.0"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
 description = "Small macro and trinkets that make my life easier."
 repository = "https://github.com/ArtemGr/gstuff.rs"
-#readme = "README.md"
-#keywords = ["web", "server"]
-license = "Apache-2.0"
+license = "MIT"
 
 [lib]
 name = "gstuff"
