@@ -41,12 +41,17 @@ mod gstuff {pub fn filename<'a> (path: &'a str) -> &'a str {super::filename (pat
   ($e: expr) => {match $e {&Ok (ref ok) => ok,
     &Err (ref err) => {return Err (From::from (format! ("{}:{}] {:?}", ::gstuff::filename (file!()), line!(), err)));}}}}
 
+/// Prepends file name and line number to the given message.
+#[macro_export] macro_rules! ERRL {
+  ($format: expr, $($args: tt)+) => {format! (concat! ("{}:{}] ", $format), ::gstuff::filename (file!()), line!(), $($args)+)};
+  ($format: expr) => {format! (concat! ("{}:{}] ", $format), ::gstuff::filename (file!()), line!())}}
+
 /// Returns a `Err(String)`, prepending the current location (file name and line number) to the string.
 ///
 /// Examples: `ERR! ("too bad")`; `ERR! ("{}", foo)`;
 #[macro_export] macro_rules! ERR {
-  ($format: expr, $($args: tt)+) => {Err (format! (concat! ("{}:{}] ", $format), ::gstuff::filename (file!()), line!(), $($args)+))};
-  ($format: expr) => {Err (format! (concat! ("{}:{}] ", $format), ::gstuff::filename (file!()), line!()))}}
+  ($format: expr, $($args: tt)+) => {Err (ERRL! ($format, $($args)+))};
+  ($format: expr) => {Err (ERRL! ($format))}}
 
 /// A helper to build a string on the stack.
 ///
