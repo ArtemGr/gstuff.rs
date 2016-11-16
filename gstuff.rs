@@ -80,6 +80,9 @@ mod gstuff {pub fn filename<'a> (path: &'a str) -> &'a str {super::filename (pat
 /// Takes a netstring from the front of the slice.
 ///
 /// Returns the unpacked netstring and the remainder of the slice.
+///
+/// NB: Netstring encoding is not included as a separate function
+/// because it is as simple as `write! (&mut buf, "{}:{},", payload.len(), payload);`.
 pub fn netstring (at: &[u8]) -> Result<(&[u8], &[u8]), String> {
   let length_end = match at.iter().position (|&ch| ch < b'0' || ch > b'9') {Some (l) if l > 0 => l, _ => return ERR! ("No len.")};
   match at.get (length_end) {Some (&ch) if ch == b':' => (), _ => return ERR! ("No colon.")};
