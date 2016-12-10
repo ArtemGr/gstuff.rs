@@ -102,8 +102,15 @@ pub fn status_line (file: &str, line: u32, status: String) {
           _ => {let _ = stdout.get_mut().write (status_line.as_bytes());}};
 
         // Clear the rest of the line.
-        let _ = stdout.delete_line();
-        let _ = stdout.get_mut().write (b"\x1B[K");  // EL0. `delete_line` just doesn't work, unfortunately.
+
+        // NB: term's `delete_line` is really screwed.
+        // Sometimes it doesn't work. And when it does, it does it wrong.
+        // Documentation says it "Deletes the text from the cursor location to the end of the line"
+        // but when it works it clears the *entire* line instead.
+        // I should probably find something better than term, unless it's `delete_line` is fixed first.
+
+        //let _ = stdout.delete_line();
+        let _ = stdout.get_mut().write (b"\x1B[K");  // EL0. Clear right.
 
         let _ = stdout.carriage_return();
         let _ = stdout.get_mut().flush();}}}}
@@ -114,8 +121,8 @@ pub fn status_line_clear() {
     if *ISATTY && !status_line.is_empty() {
       if let Some (mut stdout) = term::stdout() {
         status_line.clear();
-        let _ = stdout.delete_line();
-        let _ = stdout.get_mut().write (b"\x1B[K");  // EL0. `delete_line` just doesn't work, unfortunately.
+        //let _ = stdout.delete_line();
+        let _ = stdout.get_mut().write (b"\x1B[K");  // EL0. Clear right.
         let _ = stdout.get_mut().flush();}}}}
 
 /// Clear the status line, run the code, then restore the status line.
@@ -126,8 +133,8 @@ pub fn with_status_line (code: &Fn()) {
     if !*ISATTY || status_line.is_empty() {
       code()
     } else if let Some (mut stdout) = term::stdout() {
-      let _ = stdout.delete_line();
-      let _ = stdout.get_mut().write (b"\x1B[K");  // EL0. `delete_line` just doesn't work, unfortunately.
+      //let _ = stdout.delete_line();
+      let _ = stdout.get_mut().write (b"\x1B[K");  // EL0. Clear right.
       let _ = stdout.get_mut().flush();  // We need to send this EL0 out because the $code might be writing to stderr and thus miss it.
       code();
       // TODO: Should probably use `term_size::dimensions` to limit the status line size, just like in `fn status_line`.

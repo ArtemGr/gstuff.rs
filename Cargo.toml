@@ -1,6 +1,6 @@
 [package]
 name = "gstuff"
-version = "0.1.4"
+version = "0.1.5"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
 description = "Small macro and trinkets that make my life easier."
