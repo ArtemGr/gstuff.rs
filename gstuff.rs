@@ -90,11 +90,9 @@ pub fn status_line (file: &str, line: u32, status: String) {
       let old_hash = {let mut hasher = DefaultHasher::new(); hasher.write (status_line.as_bytes()); hasher.finish()};
       status_line.clear();
       use std::fmt::Write;
-      let _ = write! (&mut *status_line, "{}:{}] {}", gstuff::filename (file), line, status);
+      let _ = write! (&mut *status_line, "{}:{}] {}", filename (file), line, status);
       let new_hash = {let mut hasher = DefaultHasher::new(); hasher.write (status_line.as_bytes()); hasher.finish()};
       if old_hash != new_hash {
-        let _ = stdout.delete_line();
-        let _ = stdout.get_mut().write (b"\x1B[K");  // EL0. `delete_line` just doesn't work, unfortunately.
         // Try to keep the status line withing the terminal bounds.
         match term_size::dimensions() {
           Some ((w, _)) if status_line.chars().count() >= w => {
@@ -102,6 +100,11 @@ pub fn status_line (file: &str, line: u32, status: String) {
             for ch in status_line.chars().take (w - 1) {tmp.push (ch)}
             let _ = stdout.get_mut().write (tmp.as_bytes());},
           _ => {let _ = stdout.get_mut().write (status_line.as_bytes());}};
+
+        // Clear the rest of the line.
+        let _ = stdout.delete_line();
+        let _ = stdout.get_mut().write (b"\x1B[K");  // EL0. `delete_line` just doesn't work, unfortunately.
+
         let _ = stdout.carriage_return();
         let _ = stdout.get_mut().flush();}}}}
 
@@ -127,6 +130,7 @@ pub fn with_status_line (code: &Fn()) {
       let _ = stdout.get_mut().write (b"\x1B[K");  // EL0. `delete_line` just doesn't work, unfortunately.
       let _ = stdout.get_mut().flush();  // We need to send this EL0 out because the $code might be writing to stderr and thus miss it.
       code();
+      // TODO: Should probably use `term_size::dimensions` to limit the status line size, just like in `fn status_line`.
       let _ = stdout.get_mut().write (status_line.as_bytes());
       let _ = stdout.carriage_return();
       let _ = stdout.get_mut().flush();}}}
