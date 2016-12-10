@@ -1,13 +1,16 @@
-#![feature(libc)]
+#[macro_use] extern crate lazy_static;
 extern crate libc;
+extern crate term;
+extern crate term_size;
 
 use std::any::Any;
 use std::fs;
 use std::io;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::str::from_utf8_unchecked;
+use std::sync::Mutex;
 
 /// Shortcut to path->filename conversion.
 ///
@@ -52,6 +55,84 @@ mod gstuff {pub fn filename<'a> (path: &'a str) -> &'a str {super::filename (pat
 #[macro_export] macro_rules! ERR {
   ($format: expr, $($args: tt)+) => {Err (ERRL! ($format, $($args)+))};
   ($format: expr) => {Err (ERRL! ($format))}}
+
+/// --- status line -------
+
+lazy_static! {
+  static ref STATUS_LINE: Mutex<String> = Mutex::new (String::new());
+  /// True if the standard output is a terminal.
+  pub static ref ISATTY: bool = unsafe {libc::isatty (1)} != 0;}
+
+/// Clears the line to the right, prints the given text, moves the caret all the way to the left.
+///
+/// Will only work if the terminal `isatty`.
+///
+/// Repeating this call will keep updating the same line (effectively a status line).
+///
+/// And it's kind of compatible with the normal stdout logging because the latter will overwrite the status line.
+///
+/// One can also call `status_line_clear()` to clear the line before the normal output comes forth
+/// in order to avoid leaving stray characters on the screen.
+///
+/// Skips spewing the output if the hash of the generated status line is identical to the existing one.
+///
+/// The function is intended to be used with a macros, for example:
+///
+/// ```
+/// macro_rules! status_line {($($args: tt)+) => {if *ISATTY {ya_status_line (fomat! ($($args)+), file!(), line!())}}}
+/// ```
+pub fn status_line (file: &str, line: u32, status: String) {
+  use std::collections::hash_map::DefaultHasher;
+  use std::hash::Hasher;
+
+  if let Some (mut stdout) = term::stdout() {
+    if let Ok (mut status_line) = STATUS_LINE.lock() {
+      let old_hash = {let mut hasher = DefaultHasher::new(); hasher.write (status_line.as_bytes()); hasher.finish()};
+      status_line.clear();
+      use std::fmt::Write;
+      let _ = write! (&mut *status_line, "{}:{}] {}", gstuff::filename (file), line, status);
+      let new_hash = {let mut hasher = DefaultHasher::new(); hasher.write (status_line.as_bytes()); hasher.finish()};
+      if old_hash != new_hash {
+        let _ = stdout.delete_line();
+        let _ = stdout.get_mut().write (b"\x1B[K");  // EL0. `delete_line` just doesn't work, unfortunately.
+        // Try to keep the status line withing the terminal bounds.
+        match term_size::dimensions() {
+          Some ((w, _)) if status_line.chars().count() >= w => {
+            let mut tmp = String::with_capacity (w - 1);
+            for ch in status_line.chars().take (w - 1) {tmp.push (ch)}
+            let _ = stdout.get_mut().write (tmp.as_bytes());},
+          _ => {let _ = stdout.get_mut().write (status_line.as_bytes());}};
+        let _ = stdout.carriage_return();
+        let _ = stdout.get_mut().flush();}}}}
+
+/// Clears the status line ff stdout `isatty` and `status_line` isn't empty.
+pub fn status_line_clear() {
+  if let Ok (mut status_line) = STATUS_LINE.lock() {
+    if *ISATTY && !status_line.is_empty() {
+      if let Some (mut stdout) = term::stdout() {
+        status_line.clear();
+        let _ = stdout.delete_line();
+        let _ = stdout.get_mut().write (b"\x1B[K");  // EL0. `delete_line` just doesn't work, unfortunately.
+        let _ = stdout.get_mut().flush();}}}}
+
+/// Clear the status line, run the code, then restore the status line.
+///
+/// Simply runs the `code` if the stdout is not `isatty` or if the status line is empty.
+pub fn with_status_line (code: &Fn()) {
+  if let Ok (status_line) = STATUS_LINE.lock() {
+    if !*ISATTY || status_line.is_empty() {
+      code()
+    } else if let Some (mut stdout) = term::stdout() {
+      let _ = stdout.delete_line();
+      let _ = stdout.get_mut().write (b"\x1B[K");  // EL0. `delete_line` just doesn't work, unfortunately.
+      let _ = stdout.get_mut().flush();  // We need to send this EL0 out because the $code might be writing to stderr and thus miss it.
+      code();
+      let _ = stdout.get_mut().write (status_line.as_bytes());
+      let _ = stdout.carriage_return();
+      let _ = stdout.get_mut().flush();}}}
+
+#[test] fn test_status_line() {
+  with_status_line (&|| println! ("hello world"));}
 
 /// A helper to build a string on the stack.
 ///
