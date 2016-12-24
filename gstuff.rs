@@ -79,7 +79,7 @@ lazy_static! {
 /// The function is intended to be used with a macros, for example:
 ///
 /// ```
-/// macro_rules! status_line {($($args: tt)+) => {if *ISATTY {ya_status_line (fomat! ($($args)+), file!(), line!())}}}
+/// macro_rules! status_line {($($args: tt)+) => {if *ISATTY {status_line (file!(), line!(), fomat! ($($args)+))}}}
 /// ```
 pub fn status_line (file: &str, line: u32, status: String) {
   use std::collections::hash_map::DefaultHasher;
@@ -265,8 +265,8 @@ pub fn any_to_str<'a> (message: &'a Box<Any + Send + 'static>) -> Option<&'a str
 #[macro_export]
 macro_rules! take_until_parse_s (
   ($i: expr, $remainder: ident! ($($args:tt)*)) => ({
-    let input = $i as &str;
-    let mut ret = IResult::Error (nom::Err::Position (nom::ErrorKind::Custom (0), input));
+    let input: &str = $i;
+    let mut ret = IResult::Error (error_position! (nom::ErrorKind::Custom (0), input));
     for (pos, _) in $i.char_indices() {
       match $remainder! (&input[pos..], $($args)*) {
         IResult::Done (i,o)    => {ret = IResult::Done (i, (&input[0..pos], o)); break},  // Found the remainder!
@@ -290,7 +290,7 @@ macro_rules! take_until_parse_s (
 #[macro_export]
 macro_rules! parse_replace_s {
   ($i: expr, $submac: ident! ($($args:tt)*)) => ({
-    let input = $i as &str;
+    let input: &str = $i;
     let mut output = String::with_capacity (input.len() * 2 + 32);
     let mut pos = input;
     while let IResult::Done (tail, (head, evaluation)) = take_until_parse_s! (pos, $submac! ($($args)*)) {
@@ -308,8 +308,8 @@ macro_rules! parse_replace_s {
 #[macro_export]
 macro_rules! take_until_find_parse_s (
   ($i: expr, $starts: expr, $remainder: ident! ($($args:tt)*)) => ({
-    let input = $i as &str;
-    let mut ret = IResult::Error (nom::Err::Position (nom::ErrorKind::Custom (0), input));
+    let input: &str = $i;
+    let mut ret = IResult::Error (error_position! (nom::ErrorKind::Custom (0), input));
     for (pos, _) in $i.match_indices ($starts) {
       match $remainder! (&input[pos..], $($args)*) {
         IResult::Done (i,o)    => {ret = IResult::Done (i, (&input[0..pos], o)); break},  // Found the remainder!
@@ -329,7 +329,7 @@ macro_rules! take_until_find_parse_s (
 #[macro_export]
 macro_rules! find_parse_replace_s {
   ($i: expr, $starts: expr, $submac: ident! ($($args:tt)*)) => ({
-    let input = $i as &str;
+    let input: &str = $i;
     let mut output = String::with_capacity (input.len() * 2 + 32);
     let mut pos = input;
     while let IResult::Done (tail, (head, evaluation)) =
