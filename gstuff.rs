@@ -39,10 +39,24 @@ mod gstuff {pub fn filename<'a> (path: &'a str) -> &'a str {super::filename (pat
      Ok (ok) => ok,
      Err (err) => {return Err (From::from (format! ("{}:{}] {}", ::gstuff::filename (file!()), line!(), err)));}}}}
 
-// Like `try_s`, but takes a reference.
+/// Like `try_s`, but takes a reference.
 #[macro_export] macro_rules! try_sp {
   ($e: expr) => {match $e {&Ok (ref ok) => ok,
     &Err (ref err) => {return Err (From::from (format! ("{}:{}] {:?}", ::gstuff::filename (file!()), line!(), err)));}}}}
+
+/// Lifts an error into a future. `Box<Future<Item=_, Error=String>>`.
+///
+/// ```
+///   fn foo() -> Box<Future<Item=u32, Error=String>> {
+///     try_fus! (bar());
+///     try another_future = try_fus! (whatever());
+///     Box::new (another_future.then (move |something| Ok (123)))
+///   }
+/// ```
+#[macro_export] macro_rules! try_fus {
+  ($e: expr) => {match $e {
+    Ok (ok) => ok,
+    Err (err) => {return Box::new (futures::future::err (ERRL! ("{}", err)))}}}}
 
 /// Prepends file name and line number to the given message.
 #[macro_export] macro_rules! ERRL {
@@ -281,6 +295,9 @@ macro_rules! take_until_parse_s (
     ret});
 
   ($i: expr, $f: expr) => (take_until_parse_s! ($i, call! ($f));););
+
+// TODO: Should also implement the pattern interfaces at https://doc.rust-lang.org/nightly/std/str/pattern/index.html
+//       in order to search and replace with nom.
 
 /// Uses nom to find all matches of the given `$submac` parser and replace them with the `$submac` results.
 ///

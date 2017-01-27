@@ -1,9 +1,10 @@
 [package]
 name = "gstuff"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
 description = "Small macro and trinkets that make my life easier."
+documentation = "https://docs.rs/gstuff/"
 repository = "https://github.com/ArtemGr/gstuff.rs"
 license = "MIT"
 
