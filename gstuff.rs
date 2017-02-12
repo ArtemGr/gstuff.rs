@@ -44,12 +44,30 @@ mod gstuff {pub fn filename<'a> (path: &'a str) -> &'a str {super::filename (pat
   ($e: expr) => {match $e {&Ok (ref ok) => ok,
     &Err (ref err) => {return Err (From::from (format! ("{}:{}] {:?}", ::gstuff::filename (file!()), line!(), err)));}}}}
 
-/// Lifts an error into a future. `Box<Future<Item=_, Error=String>>`.
+/// Lifts an error into a boxed future. `Box<Future<Item=_, Error=_>>`.
+///
+/// For example:
+///
+/// ```
+///   Box::new (PGA.execute (select) .and_then (move |pr| -> Box<Future<Item=Vec<PgResult>, Error=PgFutureErr>> {
+///     let day = try_fu! (pr[0].row (0) .col_str (0));
+///     let json = try_fu! (pr[0].row (0) .col_json (1, "stats"));
+///     let mut stats: S = try_fu! (json::from_value (json));
+///     ...
+///     Box::new (PGA.execute (update))
+///   }))
+/// ```
+#[macro_export] macro_rules! try_fu {
+  ($e: expr) => {match $e {
+    Ok (ok) => ok,
+    Err (err) => {return Box::new (futures::future::err (From::from (err)))}}}}
+
+/// Lifts an error into a boxed future. `Box<Future<Item=_, Error=String>>`.
 ///
 /// ```
 ///   fn foo() -> Box<Future<Item=u32, Error=String>> {
 ///     try_fus! (bar());
-///     try another_future = try_fus! (whatever());
+///     let another_future = try_fus! (whatever());
 ///     Box::new (another_future.then (move |something| Ok (123)))
 ///   }
 /// ```
