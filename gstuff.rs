@@ -48,15 +48,13 @@ mod gstuff {pub fn filename<'a> (path: &'a str) -> &'a str {super::filename (pat
 ///
 /// For example:
 ///
-/// ```
-///   Box::new (PGA.execute (select) .and_then (move |pr| -> Box<Future<Item=Vec<PgResult>, Error=PgFutureErr>> {
-///     let day = try_fu! (pr[0].row (0) .col_str (0));
-///     let json = try_fu! (pr[0].row (0) .col_json (1, "stats"));
-///     let mut stats: S = try_fu! (json::from_value (json));
-///     ...
-///     Box::new (PGA.execute (update))
-///   }))
-/// ```
+///     Box::new (PGA.execute (select) .and_then (move |pr| -> Box<Future<Item=Vec<PgResult>, Error=PgFutureErr> + Send> {
+///       let day = try_fu! (pr[0].row (0) .col_str (0));
+///       let json = try_fu! (pr[0].row (0) .col_json (1, "stats"));
+///       let mut stats: S = try_fu! (json::from_value (json));
+///       ...
+///       Box::new (PGA.execute (update))
+///     }))
 #[macro_export] macro_rules! try_fu {
   ($e: expr) => {match $e {
     Ok (ok) => ok,
@@ -64,13 +62,11 @@ mod gstuff {pub fn filename<'a> (path: &'a str) -> &'a str {super::filename (pat
 
 /// Lifts an error into a boxed future. `Box<Future<Item=_, Error=String>>`.
 ///
-/// ```
-///   fn foo() -> Box<Future<Item=u32, Error=String>> {
-///     try_fus! (bar());
-///     let another_future = try_fus! (whatever());
-///     Box::new (another_future.then (move |something| Ok (123)))
-///   }
-/// ```
+///     fn foo() -> Box<Future<Item=u32, Error=String>> {
+///       try_fus! (bar());
+///       let another_future = try_fus! (whatever());
+///       Box::new (another_future.then (move |something| Ok (123)))
+///     }
 #[macro_export] macro_rules! try_fus {
   ($e: expr) => {match $e {
     Ok (ok) => ok,
@@ -110,9 +106,9 @@ lazy_static! {
 ///
 /// The function is intended to be used with a macros, for example:
 ///
-/// ```
-/// macro_rules! status_line {($($args: tt)+) => {if *ISATTY {status_line (file!(), line!(), fomat! ($($args)+))}}}
-/// ```
+///     use gstuff::{status_line, ISATTY};
+///     macro_rules! status_line {($($args: tt)+) => {if *ISATTY {
+///       status_line (file!(), line!(), fomat! ($($args)+))}}}
 pub fn status_line (file: &str, line: u32, status: String) {
   use std::collections::hash_map::DefaultHasher;
   use std::hash::Hasher;
@@ -236,16 +232,16 @@ pub fn with_hostname (visitor: &mut FnMut (&[u8])) -> Result<(), std::io::Error>
   let mut hostname = String::new();
   with_hostname (&mut |bytes| hostname = String::from_utf8_lossy (bytes) .into_owned()) .unwrap();}
 
-/// Read contents of the file into a String.
+/// Read contents of the file into a `Vec`.
 ///
-/// Returns an empty string if the file is not present under the given path.
-pub fn slurp (path: &AsRef<Path>) -> String {
+/// Returns an empty `Vec` if the file is not present under the given path.
+pub fn slurp (path: &AsRef<Path>) -> Vec<u8> {
   let mut file = match fs::File::open (path) {
     Ok (f) => f,
-    Err (ref err) if err.kind() == io::ErrorKind::NotFound => return String::new(),
+    Err (ref err) if err.kind() == io::ErrorKind::NotFound => return Vec::new(),
     Err (err) => panic! ("Can't open {:?}: {}", path.as_ref(), err)};
-  let mut buf = String::new();
-  file.read_to_string (&mut buf) .expect ("!read");
+  let mut buf = Vec::new();
+  file.read_to_end (&mut buf) .expect ("!read");
   buf}
 
 /// Runs a command in a shell, returning stderr+stdout on success.
@@ -321,6 +317,7 @@ macro_rules! take_until_parse_s (
 ///
 /// For exaple, replacing "foo" with "bar" might look like this:
 ///
+///     use nom::{self, IResult};
 ///     let bar_bar = parse_replace_s! ("foo bar", map! (tag_s! ("foo"), |_| "bar"));
 #[macro_export]
 macro_rules! parse_replace_s {
@@ -360,6 +357,7 @@ macro_rules! take_until_find_parse_s (
 ///
 /// For exaple, replacing "foo" with "bar" might look like this:
 ///
+///     use nom::{self, IResult};
 ///     let bar_bar = find_parse_replace_s! ("foo bar", ascii_chars! ('f'), map! (tag_s! ("foo"), |_| "bar"));
 #[macro_export]
 macro_rules! find_parse_replace_s {
