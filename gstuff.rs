@@ -279,7 +279,7 @@ pub fn cmd (cmd: &str) -> Result<(), String> {
   if !status.success() {Err (format! ("Command returned an error status: {}", status))} else {Ok(())}}
 
 /// Useful with panic handlers.
-pub fn any_to_str<'a> (message: &'a Box<Any + Send + 'static>) -> Option<&'a str> {
+pub fn any_to_str<'a> (message: &'a Any) -> Option<&'a str> {
   if let Some (message) = message.downcast_ref::<&str>() {return Some (message)}
   if let Some (message) = message.downcast_ref::<String>() {return Some (&message[..])}
   return None}
