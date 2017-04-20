@@ -11,6 +11,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::str::from_utf8_unchecked;
 use std::sync::Mutex;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::thread::sleep;
 
 /// Shortcut to path->filename conversion.
 ///
@@ -279,10 +281,37 @@ pub fn cmd (cmd: &str) -> Result<(), String> {
   if !status.success() {Err (format! ("Command returned an error status: {}", status))} else {Ok(())}}
 
 /// Useful with panic handlers.
+///
+/// For example:
+///
+///    if let Err (err) = catch_unwind (AssertUnwindSafe (move || {
+///      let mut core = tokio_core::reactor::Core::new().expect ("!core");
+///      loop {core.turn (None)}
+///    })) {println! ("CORE panic! {:?}", any_to_str (&*err)); std::process::abort()}
 pub fn any_to_str<'a> (message: &'a Any) -> Option<&'a str> {
   if let Some (message) = message.downcast_ref::<&str>() {return Some (message)}
   if let Some (message) = message.downcast_ref::<String>() {return Some (&message[..])}
   return None}
+
+/// Converts the duration into a number of seconds with fractions.
+pub fn duration_to_float (duration: Duration) -> f64 {
+  duration.as_secs() as f64 + ((duration.subsec_nanos() as f64) / 1000000000.0)}
+
+/// The current number of seconds since the UNIX epoch, with fractions.
+///
+/// cf. http://stackoverflow.com/a/26878367/257568 (C++, Boost).
+pub fn now_float() -> f64 {
+  let now = SystemTime::now().duration_since (UNIX_EPOCH) .expect ("!duration_since");
+  duration_to_float (now)}
+
+#[test] fn test_now_float() {
+  let now = SystemTime::now().duration_since (UNIX_EPOCH) .expect ("!duration_since") .as_secs();
+  let t1 = now_float();
+  assert_eq! (now, t1 as u64);
+  sleep (Duration::from_millis (100));
+  let t2 = now_float();
+  let delta = t2 - t1;
+  assert! (delta > 0.098 && delta < 0.102, "delta: {}", delta);}
 
 // --- nom extensions ---
 
