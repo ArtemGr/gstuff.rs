@@ -1,6 +1,6 @@
 [package]
 name = "gstuff"
-version = "0.4.1"
+version = "0.4.2"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
 description = "Small macro and trinkets that make my life easier."
@@ -17,4 +17,4 @@ doctest = false
 lazy_static = "0.2"
 libc = "0.2"
 term = "0.4"
-term_size = "0.2"
+term_size = "0.3"

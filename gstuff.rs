@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 use std::str::from_utf8_unchecked;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::thread::sleep;
+#[cfg(test)] use std::thread::sleep;
 
 /// Shortcut to path->filename conversion.
 ///
@@ -313,12 +313,30 @@ pub fn now_float() -> f64 {
   let delta = t2 - t1;
   assert! (delta > 0.098 && delta < 0.102, "delta: {}", delta);}
 
+/// Last-modified of the file in seconds since the UNIX epoch, with fractions.
+/// Returns 0 if the file does not exists.
+pub fn last_modified_sec (path: &AsRef<Path>) -> Result<f64, String> {
+  let meta = match path.as_ref().metadata() {
+    Ok (m) => m,
+    Err (ref err) if err.kind() == std::io::ErrorKind::NotFound => return Ok (0.),
+    Err (err) => return ERR! ("{}", err)};
+  let lm = try_s! (meta.modified());
+  let lm = duration_to_float (try_s! (lm.duration_since (UNIX_EPOCH)));
+  Ok (lm)}
+
 // --- nom extensions ---
 
 /// Implements the `/(?x) (.*?) (remainder)/` pattern:
 /// looks for remainder first, then returns a tuple with the prefix and the remainder.
 ///
 /// Discussion: https://www.reddit.com/r/rust/comments/4yokxd/crash_course_into_nom_kind_of_question/
+///
+/// Example iterating over an `input`:
+///
+///         let mut pos = input;
+///         while let IResult::Done (tail, (_head, _parsed_remainder)) = take_until_parse_s! (pos, tag! ("remainder")) {
+///             pos = tail
+///         }
 #[macro_export]
 macro_rules! take_until_parse_s (
   ($i: expr, $remainder: ident! ($($args:tt)*)) => ({
