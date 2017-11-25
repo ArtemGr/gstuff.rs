@@ -1,3 +1,5 @@
+#![feature(asm)]
+
 #[macro_use] extern crate lazy_static;
 extern crate libc;
 extern crate term;
@@ -313,8 +315,12 @@ pub fn now_float() -> f64 {
   let delta = t2 - t1;
   assert! (delta > 0.098 && delta < 0.102, "delta: {}", delta);}
 
-/// Last-modified of the file in seconds since the UNIX epoch, with fractions.
+/// Last-modified of the file in seconds since the UNIX epoch, with fractions.  
 /// Returns 0 if the file does not exists.
+///
+/// A typical use case:
+///
+///     if (now_float() - try_s! (last_modified_sec (&path)) > 600.) {update (&path)}
 pub fn last_modified_sec (path: &AsRef<Path>) -> Result<f64, String> {
   let meta = match path.as_ref().metadata() {
     Ok (m) => m,
@@ -421,3 +427,113 @@ macro_rules! find_parse_replace_s {
     output});
 
   ($i: expr, $starts: expr, $f: expr) => (find_parse_replace_s! ($i, $starts, call! ($f)););}
+
+/// Time Stamp Counter (number of cycles).
+pub fn rdtsc() -> u64 {  // http://stackoverflow.com/a/7617612/257568; https://github.com/gz/rust-x86/blob/master/src/bits64/time.rs
+  #[allow(unused_mut)] unsafe {
+    let mut low: u32; let mut high: u32;
+    asm!("rdtsc" : "={eax}" (low), "={edx}" (high));
+    ((high as u64) << 32) | (low as u64)}}
+
+/// Allows several threads or processes to compete for a shared resource by tracking resource ownership with a file.  
+/// If the lock file is older than `ttl_sec` then it is removed, allowing us to recover from a thread or process dying while holding the lock.
+pub struct FileLock<'a> {
+  /// Filesystem path of the lock file.
+  pub lock_path: &'a AsRef<Path>,
+  /// The time in seconds after which an outdated lock file can be removed.
+  pub ttl_sec: f64,
+  /// The owned lock file. Removed upon unlock.
+  pub file: std::fs::File}
+impl<'a> FileLock<'a> {
+  /// Tries to obtain a file lock.
+  /// 
+  /// Returns `None` if the file already exists and is recent enough.
+  ///
+  /// The returned structure will automatically remove the lock file when dropped.
+  /// 
+  ///     if let Some (lock) = try_s! (FileLock::lock (&"something.lock", 600.)) {
+  ///       // ... Your code here ...
+  ///       drop (lock)
+  ///     }
+  pub fn lock (lock_path: &'a AsRef<Path>, ttl_sec: f64) -> Result<Option<FileLock<'a>>, String> {
+    let mut cycle = 0u8;
+    loop {
+      if cycle > 1 {break Ok (None)}  // A second chance.
+      cycle += 1;
+      match std::fs::OpenOptions::new().write (true) .create_new (true) .open (lock_path.as_ref()) {
+        Ok (file) => break Ok (Some (FileLock {lock_path, ttl_sec, file})),
+        Err (ref ie) if ie.kind() == std::io::ErrorKind::AlreadyExists => {
+          // See if the existing lock is old enough to be discarded.
+          let lm = match last_modified_sec (lock_path) {
+            Ok (lm) => lm,
+            Err (ie) => break ERR! ("Error checking {:?}: {}", lock_path.as_ref(), ie)};
+          if lm == 0. {continue}  // Unlocked already?
+          if now_float() - lm > ttl_sec {
+            if let Err (err) = std::fs::remove_file (lock_path.as_ref()) {break ERR! ("Error removing {:?}: {}", lock_path.as_ref(), err)}
+            continue}
+          break Ok (None)},
+        Err (ie) => break ERR! ("Error creating {:?}: {}", lock_path.as_ref(), ie)}}}
+  /// Updates the modification time on the lock file.
+  #[cfg(unix)]
+  fn touch (&self) -> Result<(), String> {
+    let ts = libc::timespec {tv_sec: 0, tv_nsec: libc::UTIME_NOW};
+    let times = [ts, ts];
+    use std::os::unix::io::AsRawFd;
+    let rc = unsafe {libc::futimens (self.file.as_raw_fd(), &times[0])};
+    if rc != 0 {
+      let err = std::io::Error::last_os_error();
+      return ERR! ("Can't touch {:?}: {}", self.lock_path.as_ref(), err)}
+    Ok(())}}
+impl<'a> Drop for FileLock<'a> {
+  fn drop (&mut self) {
+    let _ = std::fs::remove_file (self.lock_path);}}
+impl<'a> std::fmt::Debug for FileLock<'a> {
+  fn fmt (&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    write! (f, "FileLock ({:?}, {})", self.lock_path.as_ref(), self.ttl_sec)}}
+
+/// Process entry in /proc.
+#[derive(Debug)]
+pub struct ProcEn {
+  pub name: String,
+  pub path: std::path::PathBuf,
+  /// NB: cmdline is NUL-separated.
+  pub cmdline: Vec<String>}
+impl ProcEn {
+  pub fn pid (&self) -> Option<u32> {
+    if let Some (file_name) = self.path.file_name() {
+      if let Some (file_name) = file_name.to_str() {
+        if let Ok (pid) = file_name.parse() {
+          return Some (pid)}}}
+    None}}
+/// Iterate over processes in /proc.
+///
+///     if ProcIt::new().any (|proc_en| proc_en.cmdline.iter().any (|line_en| line_en.contains ("overfiend"))) {
+///       println! ("Overfiend the daemon is live!");
+///     }
+///
+///     let overfiends: Vec<ProcEn> = ProcIt::new().filter_map (|proc_en|
+///       if proc_en.cmdline.iter().any (|line_en| line_en.contains ("overfiend")) {Some (proc_en)}
+///       else {None}
+///     ) .collect();
+pub struct ProcIt {read_dir: std::fs::ReadDir}
+impl ProcIt {
+  pub fn new() -> ProcIt {
+    ProcIt {
+      read_dir: match Path::new ("/proc") .read_dir() {Ok (it) => it, Err (err) => panic! ("!proc: {}", err)}}}}
+impl Iterator for ProcIt {
+  type Item = ProcEn;
+  fn next (&mut self) -> Option<ProcEn> {
+    match self.read_dir.next() {
+      None => return None,
+      Some (Err (err)) => panic! ("ProcIt] !read_dir: {}", err),
+      Some (Ok (proc_en)) => {
+        let file_type = match proc_en.file_type() {Ok (ft) => ft, Err (err) => panic! ("!file_type: {}", err)};
+        if !file_type.is_dir() {return self.next()}
+        let name = proc_en.file_name();
+        let name = match name.to_str() {Some (name) => name, None => panic! ("ProcIt] !to_str")};
+        if !name.as_bytes().iter().all (|&b| b >= b'0' && b <= b'9') {  // Looks like PID?
+          return self.next()}
+        let path = proc_en.path();
+        let cmdline = String::from_utf8 (slurp (&path.join ("cmdline"))) .expect ("!from_utf8");  // NB: cmdline is NUL-separated.
+        if cmdline.is_empty() {return self.next()}
+        Some (ProcEn {name: name.into(), path: path, cmdline: cmdline.split ('\0') .map (String::from) .collect()})}}}}
