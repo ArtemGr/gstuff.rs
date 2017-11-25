@@ -475,7 +475,7 @@ impl<'a> FileLock<'a> {
         Err (ie) => break ERR! ("Error creating {:?}: {}", lock_path.as_ref(), ie)}}}
   /// Updates the modification time on the lock file.
   #[cfg(unix)]
-  fn touch (&self) -> Result<(), String> {
+  pub fn touch (&self) -> Result<(), String> {
     let ts = libc::timespec {tv_sec: 0, tv_nsec: libc::UTIME_NOW};
     let times = [ts, ts];
     use std::os::unix::io::AsRawFd;
