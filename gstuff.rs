@@ -299,7 +299,7 @@ pub fn any_to_str<'a> (message: &'a Any) -> Option<&'a str> {
 pub fn duration_to_float (duration: Duration) -> f64 {
   duration.as_secs() as f64 + ((duration.subsec_nanos() as f64) / 1000000000.0)}
 
-/// The current number of seconds since the UNIX epoch, with fractions.
+/// The current number of seconds since UNIX epoch, with fractions.
 ///
 /// cf. http://stackoverflow.com/a/26878367/257568 (C++, Boost).
 pub fn now_float() -> f64 {
@@ -313,7 +313,23 @@ pub fn now_float() -> f64 {
   sleep (Duration::from_millis (100));
   let t2 = now_float();
   let delta = t2 - t1;
-  assert! (delta > 0.098 && delta < 0.102, "delta: {}", delta);}
+  assert! (delta >= 0.098 && delta <= 0.150, "delta: {}", delta);}
+
+/// Converts the duration into a number of milliseconds.
+pub fn duration_to_ms (duration: Duration) -> u64 {
+  duration.as_secs() * 1000 + (duration.subsec_nanos() / 1000000) as u64}
+
+/// The current number of milliseconds since UNIX epoch.
+pub fn now_ms() -> u64 {
+  let now = SystemTime::now().duration_since (UNIX_EPOCH) .expect ("!duration_since");
+  duration_to_ms (now)}
+
+#[test] fn test_now_ms() {
+  let t1 = now_ms();
+  sleep (Duration::from_millis (100));
+  let t2 = now_ms();
+  let delta = t2 - t1;
+  assert! (delta >= 98 && delta <= 150, "delta: {}", delta);}
 
 /// Last-modified of the file in seconds since the UNIX epoch, with fractions.  
 /// Returns 0 if the file does not exists.
