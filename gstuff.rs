@@ -445,11 +445,17 @@ macro_rules! find_parse_replace_s {
   ($i: expr, $starts: expr, $f: expr) => (find_parse_replace_s! ($i, $starts, call! ($f)););}
 
 /// Time Stamp Counter (number of cycles).
-pub fn rdtsc() -> u64 {  // http://stackoverflow.com/a/7617612/257568; https://github.com/gz/rust-x86/blob/master/src/bits64/time.rs
+pub fn rdtsc() -> u64 {
+  // https://stackoverflow.com/a/7617612/257568
+  // https://github.com/gz/rust-x86/blob/master/src/bits64/time.rs
+  // https://stackoverflow.com/a/48100158/257568
   #[allow(unused_mut)] unsafe {
     let mut low: u32; let mut high: u32;
-    asm!("rdtsc" : "={eax}" (low), "={edx}" (high));
+    asm!("rdtsc" : "={eax}" (low), "={edx}" (high) ::: "volatile");
     ((high as u64) << 32) | (low as u64)}}
+
+#[test] fn test_rdtsc() {
+  assert! (rdtsc() != rdtsc())}
 
 /// Allows several threads or processes to compete for a shared resource by tracking resource ownership with a file.  
 /// If the lock file is older than `ttl_sec` then it is removed, allowing us to recover from a thread or process dying while holding the lock.
