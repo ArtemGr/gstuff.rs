@@ -559,3 +559,48 @@ impl Iterator for ProcIt {
         let cmdline = String::from_utf8 (slurp (&path.join ("cmdline"))) .expect ("!from_utf8");  // NB: cmdline is NUL-separated.
         if cmdline.is_empty() {return self.next()}
         Some (ProcEn {name: name.into(), path: path, cmdline: cmdline.split ('\0') .map (String::from) .collect()})}}}}
+
+/// Reason for having this is that neither `multiqueue` nor `crossbeam_channel` implement UnwindSafe currently.
+///
+/// cf. https://github.com/crossbeam-rs/crossbeam-channel/issues/25.
+///
+/// Condvar is hopefully unwind-save since it's using a poisoning Mutex. Should unit-test it though.
+pub mod oneshot {
+  use std::panic::AssertUnwindSafe;
+  use std::sync::{Arc, Condvar, Mutex};
+
+  /// Accepts one value into the channel.
+  pub struct Sender<T> (Arc<Mutex<Option<T>>>, Arc<AssertUnwindSafe<Condvar>>);
+  impl<T> Sender<T> {
+    pub fn send (self, v: T) {
+      { let arc_mutex = self.0;  // Moving `self.0` in order to drop it first.
+        { let lr = arc_mutex.lock();
+          if let Ok (mut lock) = lr {*lock = Some (v)} } }
+      self.1.notify_one()}}
+
+  /// Returns the value from the channel.
+  pub struct Receiver<T> (Arc<Mutex<Option<T>>>, Arc<AssertUnwindSafe<Condvar>>);
+  impl<T> Receiver<T> {
+    pub fn recv (self) -> Result<T, String> {
+      let mut arc_mutex = self.0;
+      let arc_condvar = self.1;
+      loop {
+        match Arc::try_unwrap (arc_mutex) {
+          Ok (mutex) => {
+            if let Some (value) = try_s! (mutex.into_inner()) {return Ok (value)}
+            else {return ERR! ("recv] Sender gone without providing a value")}},
+          Err (am) => {
+            arc_mutex = am;
+            let mut locked_value = try_s! (arc_mutex.lock());
+            if locked_value.is_none() {let _locked_value = try_s! (arc_condvar.wait (locked_value));}}}}}}
+
+  /// Create a new oneshot channel.
+  pub fn oneshot<T>() -> (Sender<T>, Receiver<T>) {
+    let arc_mutex = Arc::new (Mutex::new (None));
+    let arc_condvar = Arc::new (AssertUnwindSafe (Condvar::new()));
+    (Sender (arc_mutex.clone(), arc_condvar.clone()), Receiver (arc_mutex, arc_condvar))}}
+
+#[test] fn test_oneshot() {
+  let (tx, rx) = oneshot::oneshot();
+  std::thread::spawn (|| tx.send (42));
+  assert_eq! (42, rx.recv().expect("!recv"))}
