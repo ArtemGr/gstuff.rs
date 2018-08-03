@@ -1,4 +1,4 @@
-#![feature(asm)]
+#![cfg_attr(feature = "nightly", feature(asm))]
 
 #[macro_use] extern crate lazy_static;
 extern crate libc;
@@ -445,6 +445,7 @@ macro_rules! find_parse_replace_s {
   ($i: expr, $starts: expr, $f: expr) => (find_parse_replace_s! ($i, $starts, call! ($f)););}
 
 /// Time Stamp Counter (number of cycles).
+#[cfg(feature = "nightly")]
 pub fn rdtsc() -> u64 {
   // https://stackoverflow.com/a/7617612/257568
   // https://github.com/gz/rust-x86/blob/master/src/bits64/time.rs
@@ -454,6 +455,7 @@ pub fn rdtsc() -> u64 {
     asm!("rdtsc" : "={eax}" (low), "={edx}" (high) ::: "volatile");
     ((high as u64) << 32) | (low as u64)}}
 
+#[cfg(feature = "nightly")]
 #[test] fn test_rdtsc() {
   assert! (rdtsc() != rdtsc())}
 

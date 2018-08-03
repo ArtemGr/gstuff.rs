@@ -1,6 +1,6 @@
 [package]
 name = "gstuff"
-version = "0.4.7"
+version = "0.5.0"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
 description = "Small macro and trinkets that make my life easier."
@@ -14,7 +14,7 @@ path = "gstuff.rs"
 doctest = false
 
 [dependencies]
-lazy_static = "0.2"
+lazy_static = "1"
 libc = "0.2"
-term = "0.4"
+term = "0.5"
 term_size = "0.3"
