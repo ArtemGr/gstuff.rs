@@ -498,7 +498,8 @@ impl<'a> FileLock<'a> {
           break Ok (None)},
         Err (ie) => break ERR! ("Error creating {:?}: {}", lock_path.as_ref(), ie)}}}
   /// Updates the modification time on the lock file.
-  #[cfg(unix)]
+  /// Compile on Linux only as UTIME_NOW and futimens is absent on MacOS.
+  #[cfg(target_os = "linux")]
   pub fn touch (&self) -> Result<(), String> {
     let ts = libc::timespec {tv_sec: 0, tv_nsec: libc::UTIME_NOW};
     let times = [ts, ts];
