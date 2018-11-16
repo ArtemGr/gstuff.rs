@@ -1,6 +1,6 @@
 [package]
 name = "gstuff"
-version = "0.5.1"
+version = "0.5.2"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
 description = "Small macro and trinkets that make my life easier."
@@ -12,6 +12,9 @@ license = "MIT"
 name = "gstuff"
 path = "gstuff.rs"
 doctest = false
+
+[features]
+nightly = []
 
 [dependencies]
 lazy_static = "1"
