@@ -283,13 +283,13 @@ pub fn cmd (cmd: &str) -> Result<(), String> {
   if !status.success() {Err (format! ("Command returned an error status: {}", status))} else {Ok(())}}
 
 /// Useful with panic handlers.
-///
+/// 
 /// For example:
-///
-///    if let Err (err) = catch_unwind (AssertUnwindSafe (move || {
-///      let mut core = tokio_core::reactor::Core::new().expect ("!core");
-///      loop {core.turn (None)}
-///    })) {println! ("CORE panic! {:?}", any_to_str (&*err)); std::process::abort()}
+/// 
+///     if let Err (err) = catch_unwind (AssertUnwindSafe (move || {
+///       let mut core = tokio_core::reactor::Core::new().expect ("!core");
+///       loop {core.turn (None)}
+///     })) {println! ("CORE panic! {:?}", any_to_str (&*err)); std::process::abort()}
 pub fn any_to_str<'a> (message: &'a Any) -> Option<&'a str> {
   if let Some (message) = message.downcast_ref::<&str>() {return Some (message)}
   if let Some (message) = message.downcast_ref::<String>() {return Some (&message[..])}
