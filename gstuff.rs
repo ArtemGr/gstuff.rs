@@ -9,6 +9,7 @@ use std::any::Any;
 use std::fs;
 use std::io;
 use std::io::{Read, Write};
+use std::os::raw::c_int;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::str::from_utf8_unchecked;
@@ -88,12 +89,18 @@ mod gstuff {pub fn filename<'a> (path: &'a str) -> &'a str {super::filename (pat
   ($format: expr, $($args: tt)+) => {Err (ERRL! ($format, $($args)+))};
   ($format: expr) => {Err (ERRL! ($format))}}
 
-/// --- status line -------
+// --- status line -------
+
+#[cfg(not(target_arch = "wasm32"))] 
+fn isatty (fd: c_int) -> c_int {unsafe {libc::isatty (fd)}}
+
+#[cfg(target_arch = "wasm32")]
+fn isatty (_fd: c_int) -> c_int {0}
 
 lazy_static! {
   static ref STATUS_LINE: Mutex<String> = Mutex::new (String::new());
   /// True if the standard output is a terminal.
-  pub static ref ISATTY: bool = unsafe {libc::isatty (1)} != 0;}
+  pub static ref ISATTY: bool = isatty (1) != 0;}
 
 /// Clears the line to the right, prints the given text, moves the caret all the way to the left.
 ///
@@ -160,7 +167,7 @@ pub fn status_line_clear() {
 /// Clear the status line, run the code, then restore the status line.
 ///
 /// Simply runs the `code` if the stdout is not `isatty` or if the status line is empty.
-pub fn with_status_line (code: &Fn()) {
+pub fn with_status_line (code: &dyn Fn()) {
   if let Ok (status_line) = STATUS_LINE.lock() {
     if !*ISATTY || status_line.is_empty() {
       code()
@@ -239,7 +246,7 @@ pub fn with_hostname (visitor: &mut FnMut (&[u8])) -> Result<(), std::io::Error>
 /// Read contents of the file into a `Vec`.
 ///
 /// Returns an empty `Vec` if the file is not present under the given path.
-pub fn slurp (path: &AsRef<Path>) -> Vec<u8> {
+pub fn slurp (path: &dyn AsRef<Path>) -> Vec<u8> {
   let mut file = match fs::File::open (path) {
     Ok (f) => f,
     Err (ref err) if err.kind() == io::ErrorKind::NotFound => return Vec::new(),
@@ -290,7 +297,7 @@ pub fn cmd (cmd: &str) -> Result<(), String> {
 ///       let mut core = tokio_core::reactor::Core::new().expect ("!core");
 ///       loop {core.turn (None)}
 ///     })) {println! ("CORE panic! {:?}", any_to_str (&*err)); std::process::abort()}
-pub fn any_to_str<'a> (message: &'a Any) -> Option<&'a str> {
+pub fn any_to_str<'a> (message: &'a dyn Any) -> Option<&'a str> {
   if let Some (message) = message.downcast_ref::<&str>() {return Some (message)}
   if let Some (message) = message.downcast_ref::<String>() {return Some (&message[..])}
   return None}
@@ -337,7 +344,7 @@ pub fn now_ms() -> u64 {
 /// A typical use case:
 ///
 ///     if (now_float() - try_s! (last_modified_sec (&path)) > 600.) {update (&path)}
-pub fn last_modified_sec (path: &AsRef<Path>) -> Result<f64, String> {
+pub fn last_modified_sec (path: &dyn AsRef<Path>) -> Result<f64, String> {
   let meta = match path.as_ref().metadata() {
     Ok (m) => m,
     Err (ref err) if err.kind() == std::io::ErrorKind::NotFound => return Ok (0.),
@@ -463,7 +470,7 @@ pub fn rdtsc() -> u64 {
 /// If the lock file is older than `ttl_sec` then it is removed, allowing us to recover from a thread or process dying while holding the lock.
 pub struct FileLock<'a> {
   /// Filesystem path of the lock file.
-  pub lock_path: &'a AsRef<Path>,
+  pub lock_path: &'a dyn AsRef<Path>,
   /// The time in seconds after which an outdated lock file can be removed.
   pub ttl_sec: f64,
   /// The owned lock file. Removed upon unlock.
@@ -479,7 +486,7 @@ impl<'a> FileLock<'a> {
   ///       // ... Your code here ...
   ///       drop (lock)
   ///     }
-  pub fn lock (lock_path: &'a AsRef<Path>, ttl_sec: f64) -> Result<Option<FileLock<'a>>, String> {
+  pub fn lock (lock_path: &'a dyn AsRef<Path>, ttl_sec: f64) -> Result<Option<FileLock<'a>>, String> {
     let mut cycle = 0u8;
     loop {
       if cycle > 1 {break Ok (None)}  // A second chance.
@@ -594,7 +601,7 @@ pub mod oneshot {
             else {return ERR! ("recv] Sender gone without providing a value")}},
           Err (am) => {
             arc_mutex = am;
-            let mut locked_value = try_s! (arc_mutex.lock());
+            let locked_value = try_s! (arc_mutex.lock());
             if locked_value.is_none() {let _locked_value = try_s! (arc_condvar.wait (locked_value));}}}}}}
 
   /// Create a new oneshot channel.
