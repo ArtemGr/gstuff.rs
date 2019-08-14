@@ -640,11 +640,14 @@ pub struct Constructible<T> {
   value: Atomic<usize>,
   _phantom: std::marker::PhantomData<T>}
 
+/// Creates a cell without a value.  
+/// Use `pin` or `initialize` to provide the value later.
 impl<T> Default for Constructible<T> {
   fn default() -> Constructible<T> {Constructible {
     value: Atomic::new (0),
     _phantom: PhantomData}}}
 
+/// Pre-initialize the cell with the given value.
 impl<T> From<T> for Constructible<T> {
   fn from (v: T) -> Constructible<T> {
     let v = Box::new (v);
@@ -679,7 +682,7 @@ impl<T> Constructible<T> {
     } else {
       default()}}
 
-  /// Returns a clone of the value or the `default` if the value is not yet available.
+  /// Returns a copy of the value or the `default` if the value is not yet available.
   pub fn copy_or (&self, default: T) -> T where T: Copy {
     let v = self.value.load (Ordering::Relaxed);
     if v != 0 {
@@ -697,15 +700,16 @@ impl<T> Constructible<T> {
     } else {
       default}}
 
-  pub fn ok_or<'a, E> (&'a self, err: E) -> Result<&'a T, E> {
+  // Returns a reference to the value or the given `error` if the value is not yet available.
+  pub fn ok_or<'a, E> (&'a self, error: E) -> Result<&'a T, E> {
     let v = self.value.load (Ordering::Relaxed);
     if v != 0 {
       let v = v as *const T;
       Ok (unsafe {&*v})
     } else {
-      Err (err)}}
+      Err (error)}}
 
-  /// Returns a reference to the value or `None` if the value is not yet initialized.
+  /// Returns a reference to the value or `None` if the value is not yet available.
   pub fn as_option<'a> (&'a self) -> Option<&'a T> {
     let v = self.value.load (Ordering::Relaxed);
     if v != 0 {
@@ -714,9 +718,11 @@ impl<T> Constructible<T> {
     } else {
       None}}
 
+  /// True if the value is not yet available.
   pub fn is_none (&self) -> bool {
     self.value.load (Ordering::Relaxed) == 0}
 
+  /// True if the cell is now initialized with a value.
   pub fn is_some (&self) -> bool {
     self.value.load (Ordering::Relaxed) != 0}
 
@@ -724,6 +730,9 @@ impl<T> Constructible<T> {
   pub fn iter<'a> (&'a self) -> std::option::IntoIter<&'a T> {
     self.as_option().into_iter()}}
 
+/// Makes it possible to access the value with a `for` loop.
+/// 
+///     for value in &constructible {println! ("{}", value)}
 impl<'a, T> IntoIterator for &'a Constructible<T> {
   type Item = &'a T;
   type IntoIter = std::option::IntoIter<&'a T>;
