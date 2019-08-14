@@ -1,6 +1,7 @@
 [package]
 name = "gstuff"
-version = "0.5.3"
+version = "0.5.4"
+edition = "2018"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
 description = "Small macro and trinkets that make my life easier."
@@ -17,7 +18,8 @@ doctest = false
 nightly = []
 
 [dependencies]
+atomic = "0.4"
 lazy_static = "1"
 libc = "0.2"
-term = "0.5"
-term_size = "0.3"
+term = {version = "0.6", optional = true}
+term_size = {version = "0.3", optional = true}

@@ -2,18 +2,20 @@
 
 #[macro_use] extern crate lazy_static;
 extern crate libc;
-extern crate term;
-extern crate term_size;
+#[cfg(feature = "term")] extern crate term;
+#[cfg(feature = "term_size")] extern crate term_size;
 
+use atomic::Atomic;
 use std::any::Any;
 use std::fs;
-use std::io;
-use std::io::{Read, Write};
+use std::io::{self, Read};
+use std::marker::PhantomData;
 use std::os::raw::c_int;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::str::from_utf8_unchecked;
 use std::sync::Mutex;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(test)] use std::thread::sleep;
 
@@ -27,8 +29,6 @@ pub fn filename<'a> (path: &'a str) -> &'a str {
       None => path},
     None => path}}
 
-mod gstuff {pub fn filename<'a> (path: &'a str) -> &'a str {super::filename (path)}}
-
 // A trick to use the `try_s` macro from both the outside and inside of the crate.
 //mod gstuff {pub fn filename<'a> (path: &'a str) -> &'a str {::filename (path)}}
 
@@ -36,18 +36,20 @@ mod gstuff {pub fn filename<'a> (path: &'a str) -> &'a str {super::filename (pat
 ///
 /// cf. http://www.reddit.com/r/rust/comments/29wwzw/error_handling_and_result_types/cipcm9a
 #[macro_export] macro_rules! try_s {
-  ($e: expr) => {match $e {Ok (ok) => ok, Err (err) => {return Err (format! ("{}:{}] {}", ::gstuff::filename (file!()), line!(), err));}}}}
+  ($e: expr) => {match $e {
+    Ok (ok) => ok,
+    Err (err) => {return Err (format! ("{}:{}] {}", $crate::filename (file!()), line!(), err));}}}}
 
 /// Returns on error, prepending the current location to a stringified error, then passing the string to `From::from`.
 #[macro_export] macro_rules! try_f {
    ($e: expr) => {match $e {
      Ok (ok) => ok,
-     Err (err) => {return Err (From::from (format! ("{}:{}] {}", ::gstuff::filename (file!()), line!(), err)));}}}}
+     Err (err) => {return Err (From::from (format! ("{}:{}] {}", $crate::filename (file!()), line!(), err)));}}}}
 
 /// Like `try_s`, but takes a reference.
 #[macro_export] macro_rules! try_sp {
   ($e: expr) => {match $e {&Ok (ref ok) => ok,
-    &Err (ref err) => {return Err (From::from (format! ("{}:{}] {:?}", ::gstuff::filename (file!()), line!(), err)));}}}}
+    &Err (ref err) => {return Err (From::from (format! ("{}:{}] {:?}", $crate::filename (file!()), line!(), err)));}}}}
 
 /// Lifts an error into a boxed future. `Box<Future<Item=_, Error=_>>`.
 ///
@@ -79,8 +81,8 @@ mod gstuff {pub fn filename<'a> (path: &'a str) -> &'a str {super::filename (pat
 
 /// Prepends file name and line number to the given message.
 #[macro_export] macro_rules! ERRL {
-  ($format: expr, $($args: tt)+) => {format! (concat! ("{}:{}] ", $format), ::gstuff::filename (file!()), line!(), $($args)+)};
-  ($format: expr) => {format! (concat! ("{}:{}] ", $format), ::gstuff::filename (file!()), line!())}}
+  ($format: expr, $($args: tt)+) => {format! (concat! ("{}:{}] ", $format), $crate::filename (file!()), line!(), $($args)+)};
+  ($format: expr) => {format! (concat! ("{}:{}] ", $format), $crate::filename (file!()), line!())}}
 
 /// Returns a `Err(String)`, prepending the current location (file name and line number) to the string.
 ///
@@ -120,7 +122,9 @@ lazy_static! {
 ///     use gstuff::{status_line, ISATTY};
 ///     macro_rules! status_line {($($args: tt)+) => {if *ISATTY {
 ///       status_line (file!(), line!(), fomat! ($($args)+))}}}
+#[cfg(all(feature = "term", feature = "term_size"))]
 pub fn status_line (file: &str, line: u32, status: String) {
+  use io::Write;
   use std::collections::hash_map::DefaultHasher;
   use std::hash::Hasher;
 
@@ -155,7 +159,10 @@ pub fn status_line (file: &str, line: u32, status: String) {
         let _ = stdout.get_mut().flush();}}}}
 
 /// Clears the status line ff stdout `isatty` and `status_line` isn't empty.
+#[cfg(feature = "term")]
 pub fn status_line_clear() {
+  use io::Write;
+
   if let Ok (mut status_line) = STATUS_LINE.lock() {
     if *ISATTY && !status_line.is_empty() {
       if let Some (mut stdout) = term::stdout() {
@@ -167,7 +174,10 @@ pub fn status_line_clear() {
 /// Clear the status line, run the code, then restore the status line.
 ///
 /// Simply runs the `code` if the stdout is not `isatty` or if the status line is empty.
+#[cfg(feature = "term")]
 pub fn with_status_line (code: &dyn Fn()) {
+  use io::Write;
+
   if let Ok (status_line) = STATUS_LINE.lock() {
     if !*ISATTY || status_line.is_empty() {
       code()
@@ -181,6 +191,7 @@ pub fn with_status_line (code: &dyn Fn()) {
       let _ = stdout.carriage_return();
       let _ = stdout.get_mut().flush();}}}
 
+#[cfg(feature = "term")]
 #[test] fn test_status_line() {
   with_status_line (&|| println! ("hello world"));}
 
@@ -614,3 +625,114 @@ pub mod oneshot {
   let (tx, rx) = oneshot::oneshot();
   std::thread::spawn (|| tx.send (42));
   assert_eq! (42, rx.recv().expect("!recv"))}
+
+/// Helps logging binary data (particularly with text-readable parts, such as bencode, netstring)
+/// by replacing all the non-printable bytes with the `blank` character.
+pub fn binprint (bin: &[u8], blank: u8) -> String {
+  let mut bin: Vec<u8> = bin.into();
+  for ch in bin.iter_mut() {if *ch < 0x20 || *ch >= 0x7F {*ch = blank}}
+  unsafe {String::from_utf8_unchecked (bin)}}
+
+/// A cell that can be initialized, but only once.  
+/// Once initialized the cell remains immutable, allowing us to alias the value.
+pub struct Constructible<T> {
+  /// A pinned `Box` pointer, or 0 if not initialized.
+  value: Atomic<usize>,
+  _phantom: std::marker::PhantomData<T>}
+
+impl<T> Default for Constructible<T> {
+  fn default() -> Constructible<T> {Constructible {
+    value: Atomic::new (0),
+    _phantom: PhantomData}}}
+
+impl<T> From<T> for Constructible<T> {
+  fn from (v: T) -> Constructible<T> {
+    let v = Box::new (v);
+    let v = Box::into_raw (v);
+    Constructible {
+      value: Atomic::new (v as usize),
+      _phantom: PhantomData}}}
+
+impl<T> Constructible<T> {
+  /// Provides the cell with the value.  
+  /// The value is effectively pinned in the cell, it won't be moved.  
+  /// Returns an error if the cell is already initialized.
+  pub fn initialize<'a> (&'a self, v: Box<T>) -> Result<&'a T, String> {
+    let v = Box::into_raw (v);
+    if let Err (_) = self.value.compare_exchange (0, v as usize, Ordering::Relaxed, Ordering::Relaxed) {
+      unsafe {Box::from_raw (v)};
+      return ERR! ("Cell already initialized")}
+    Ok (unsafe {&*v})}
+
+  /// Provides the cell with the value.  
+  /// The value is moved into a `Box` and pinned there.  
+  /// Returns an error if the cell is already initialized.
+  pub fn pin<'a> (&'a self, v: T) -> Result<&'a T, String> {self.initialize (Box::new (v))}
+
+  /// Get a reference to the value.  
+  /// If the value is not (yet) available then returns the reference provided by `default`.
+  pub fn or<'a, F> (&'a self, default: &'a F) -> &'a T where F: Fn() -> &'a T, T: 'a {
+    let v = self.value.load (Ordering::Relaxed);
+    if v != 0 {
+      let v = v as *const T;
+      unsafe {&*v}
+    } else {
+      default()}}
+
+  /// Returns a clone of the value or the `default` if the value is not yet available.
+  pub fn copy_or (&self, default: T) -> T where T: Copy {
+    let v = self.value.load (Ordering::Relaxed);
+    if v != 0 {
+      let v = v as *const T;
+      unsafe {*v}
+    } else {
+      default}}
+
+  /// Returns a clone of the value or the `default` if the value is not yet available.
+  pub fn clone_or (&self, default: T) -> T where T: Clone {
+    let v = self.value.load (Ordering::Relaxed);
+    if v != 0 {
+      let v = v as *const T;
+      unsafe {(*v).clone()}
+    } else {
+      default}}
+
+  pub fn ok_or<'a, E> (&'a self, err: E) -> Result<&'a T, E> {
+    let v = self.value.load (Ordering::Relaxed);
+    if v != 0 {
+      let v = v as *const T;
+      Ok (unsafe {&*v})
+    } else {
+      Err (err)}}
+
+  /// Returns a reference to the value or `None` if the value is not yet initialized.
+  pub fn as_option<'a> (&'a self) -> Option<&'a T> {
+    let v = self.value.load (Ordering::Relaxed);
+    if v != 0 {
+      let v = v as *const T;
+      Some (unsafe {&*v})
+    } else {
+      None}}
+
+  pub fn is_none (&self) -> bool {
+    self.value.load (Ordering::Relaxed) == 0}
+
+  pub fn is_some (&self) -> bool {
+    self.value.load (Ordering::Relaxed) != 0}
+
+  /// Returns a reference to the value unless it was not yet initialized.
+  pub fn iter<'a> (&'a self) -> std::option::IntoIter<&'a T> {
+    self.as_option().into_iter()}}
+
+impl<'a, T> IntoIterator for &'a Constructible<T> {
+  type Item = &'a T;
+  type IntoIter = std::option::IntoIter<&'a T>;
+  fn into_iter (self) -> Self::IntoIter {
+    self.as_option().into_iter()}}
+
+impl<T> Drop for Constructible<T> {
+  fn drop (&mut self) {
+    let v = self.value.load (Ordering::Relaxed);
+    if v == 0 {return}
+    if self.value.compare_exchange (v, 0, Ordering::Relaxed, Ordering::Relaxed) .is_err() {return}
+    unsafe {Box::from_raw (v as *mut T)};}}
