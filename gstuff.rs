@@ -238,10 +238,9 @@ pub fn netstring (at: &[u8]) -> Result<(&[u8], &[u8]), String> {
 
 /// Wraps `gethostname` to fetch the current hostname into a temporary buffer.
 #[cfg(unix)]
-pub fn with_hostname (visitor: &mut FnMut (&[u8])) -> Result<(), std::io::Error> {
+pub fn with_hostname (visitor: &mut dyn FnMut (&[u8])) -> Result<(), std::io::Error> {
   use libc::{size_t, gethostname};  // http://man7.org/linux/man-pages/man2/gethostname.2.html
   use std::ffi::CStr;
-  use std::io;
 
   let mut buf = [0; 128];
   let rc = unsafe {gethostname (buf.as_mut_ptr(), (buf.len() - 1) as size_t)};
@@ -667,11 +666,20 @@ impl<T> From<Option<T>> for Constructible<T> {
       None => Constructible::default()}}}
 
 /// Allows to `parse` directly into the cell.
-impl<T, E> FromStr for Constructible<T> where T: FromStr<Err=E>, E: fmt::Display {
-  type Err = String;
+impl<T, E> FromStr for Constructible<T> where T: FromStr<Err=E> {
+  type Err = E;
   fn from_str (s: &str) -> Result<Self, Self::Err> {
-    let v: T = try_s! (s.parse());
+    let v: T = s.parse()?;
     Ok (Self::from (v))}}
+
+#[test] fn test_parse() {
+  use std::num::ParseIntError;
+
+  let rc: Result<Constructible<u32>, ParseIntError> = "-1".parse();
+  assert! (rc.is_err());
+
+  let c: Constructible<i32> = "123".parse().unwrap();
+  assert_eq! (c.copy_or (0), 123);}
 
 impl<T> Constructible<T> {
   /// Provides the cell with the value.  
