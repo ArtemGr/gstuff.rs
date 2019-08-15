@@ -657,6 +657,15 @@ impl<T> From<T> for Constructible<T> {
       value: Atomic::new (v as usize),
       _phantom: PhantomData}}}
 
+/// Translate an `Option` into a `Constructible` cell.  
+/// If the `Option` has a value then the cell with be initialized with it.  
+/// If the `Option` is empty then the cell will be empty as well, and waiting for delayed initialization.
+impl<T> From<Option<T>> for Constructible<T> {
+  fn from (v: Option<T>) -> Constructible<T> {
+    match v {
+      Some (v) => Constructible::from (v),
+      None => Constructible::default()}}}
+
 /// Allows to `parse` directly into the cell.
 impl<T, E> FromStr for Constructible<T> where T: FromStr<Err=E>, E: fmt::Display {
   type Err = String;
