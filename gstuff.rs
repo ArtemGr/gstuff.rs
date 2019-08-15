@@ -8,12 +8,13 @@ extern crate libc;
 use atomic::Atomic;
 use std::any::Any;
 use std::fs;
+use std::fmt;
 use std::io::{self, Read};
 use std::marker::PhantomData;
 use std::os::raw::c_int;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::str::from_utf8_unchecked;
+use std::str::{from_utf8_unchecked, FromStr};
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -656,6 +657,13 @@ impl<T> From<T> for Constructible<T> {
       value: Atomic::new (v as usize),
       _phantom: PhantomData}}}
 
+/// Allows to `parse` directly into the cell.
+impl<T, E> FromStr for Constructible<T> where T: FromStr<Err=E>, E: fmt::Display {
+  type Err = String;
+  fn from_str (s: &str) -> Result<Self, Self::Err> {
+    let v: T = try_s! (s.parse());
+    Ok (Self::from (v))}}
+
 impl<T> Constructible<T> {
   /// Provides the cell with the value.  
   /// The value is effectively pinned in the cell, it won't be moved.  
@@ -700,7 +708,7 @@ impl<T> Constructible<T> {
     } else {
       default}}
 
-  // Returns a reference to the value or the given `error` if the value is not yet available.
+  /// Returns a reference to the value or the given `error` if the value is not yet available.
   pub fn ok_or<'a, E> (&'a self, error: E) -> Result<&'a T, E> {
     let v = self.value.load (Ordering::Relaxed);
     if v != 0 {
@@ -738,6 +746,18 @@ impl<'a, T> IntoIterator for &'a Constructible<T> {
   type IntoIter = std::option::IntoIter<&'a T>;
   fn into_iter (self) -> Self::IntoIter {
     self.as_option().into_iter()}}
+
+/// Debug formatting similar to `Option<&T>`.
+impl<T> fmt::Debug for Constructible<T> where T: fmt::Debug {
+  fn fmt (&self, ft: &mut fmt::Formatter) -> fmt::Result {
+    write! (ft, "{:?}", self.as_option())}}
+
+/// Prints the value or "-" if it is not yet available.
+impl<T> fmt::Display for Constructible<T> where T: fmt::Display {
+  fn fmt (&self, ft: &mut fmt::Formatter) -> fmt::Result {
+    match self.as_option() {
+      Some (v) => write! (ft, "{}", v),
+      None => write! (ft, "-")}}}
 
 impl<T> Drop for Constructible<T> {
   fn drop (&mut self) {
