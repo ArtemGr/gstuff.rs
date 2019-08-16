@@ -1,5 +1,8 @@
 #![cfg_attr(feature = "nightly", feature(asm))]
 
+// https://github.com/rust-lang/rust/issues/57563
+#![cfg_attr(feature = "nightly", feature(const_fn))]
+
 #[macro_use] extern crate lazy_static;
 extern crate libc;
 #[cfg(feature = "term")] extern crate term;
@@ -682,6 +685,15 @@ impl<T, E> FromStr for Constructible<T> where T: FromStr<Err=E> {
   assert_eq! (c.copy_or (0), 123);}
 
 impl<T> Constructible<T> {
+  /// Creates a cell without a value.  
+  /// Use `pin` or `initialize` to provide the value later.  
+  /// Being a `const` function it can be used with static fields.
+  #[cfg(feature = "nightly")]
+  pub const fn new() -> Constructible<T> {
+    Constructible {
+      value: Atomic::new (0),
+      _phantom: PhantomData}}
+
   /// Provides the cell with the value.  
   /// The value is effectively pinned in the cell, it won't be moved.  
   /// Returns an error if the cell is already initialized.
@@ -754,6 +766,15 @@ impl<T> Constructible<T> {
   /// Returns a reference to the value unless it was not yet initialized.
   pub fn iter<'a> (&'a self) -> std::option::IntoIter<&'a T> {
     self.as_option().into_iter()}}
+
+#[cfg(feature = "nightly")]
+#[test] fn test_const() {
+  static V: Constructible<i32> = Constructible::new();
+  assert_eq! (V.copy_or (-1), -1);
+  V.pin (11) .unwrap();
+  assert_eq! (V.copy_or (-1), 11);
+  assert! (V.pin (22) .is_err());
+  assert_eq! (V.copy_or (-1), 11)}
 
 /// Makes it possible to access the value with a `for` loop.
 /// 

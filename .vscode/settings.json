@@ -1,0 +1,7 @@
+{
+    // https://github.com/rust-lang/rls#configuration
+    "rust.features": ["nightly"],
+    "rust.build_on_save": true,
+    "rust.clippy_preference": "off",
+    "rust.build_lib": true
+}
