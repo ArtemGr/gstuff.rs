@@ -469,6 +469,8 @@ macro_rules! find_parse_replace_s {
 
   ($i: expr, $starts: expr, $f: expr) => (find_parse_replace_s! ($i, $starts, call! ($f)););}
 
+// TODO: Consider targeting a CPU instead of an OS here.
+
 /// Time Stamp Counter (number of cycles).
 #[cfg(feature = "nightly")]
 #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
