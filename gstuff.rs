@@ -27,11 +27,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 ///
 /// Returns the unchanged `path` if there is a character encoding error or something.
 pub fn filename<'a> (path: &'a str) -> &'a str {
-  match Path::new (path) .file_name() {
-    Some (filename) => match filename.to_str() {
-      Some (fstr) => if fstr.ends_with (".rs") {&fstr[0 .. fstr.len() - 3]} else {fstr},
-      None => path},
-    None => path}}
+  // NB: `Path::new (path) .file_name()` only works for file separators of the current operating system,
+  // whereas the error trace might be coming from another operating system.
+  // In particular, I see `file_name` failing with WASM.
+
+  let name = match path.rfind (|ch| ch == '/' || ch == '\\') {
+    Some (ofs) => &path[ofs+1..],
+    None => path};
+
+  if name.ends_with (".rs") {&name[0 .. name.len() - 3]} else {name}}
 
 // A trick to use the `try_s` macro from both the outside and inside of the crate.
 //mod gstuff {pub fn filename<'a> (path: &'a str) -> &'a str {::filename (path)}}
