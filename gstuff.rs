@@ -471,7 +471,7 @@ macro_rules! find_parse_replace_s {
 
 /// Time Stamp Counter (number of cycles).
 #[cfg(feature = "nightly")]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
 pub fn rdtsc() -> u64 {
   // https://stackoverflow.com/a/7617612/257568
   // https://github.com/gz/rust-x86/blob/master/src/bits64/time.rs
