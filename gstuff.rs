@@ -73,7 +73,7 @@ pub fn filename<'a> (path: &'a str) -> &'a str {
 #[macro_export] macro_rules! try_fu {
   ($e: expr) => {match $e {
     Ok (ok) => ok,
-    Err (err) => {return Box::new (futures::future::err (From::from (err)))}}}}
+    Err (err) => {return Box::new (futures01::future::err (From::from (err)))}}}}
 
 /// Lifts an error into a boxed future. `Box<Future<Item=_, Error=String>>`.
 ///
@@ -85,7 +85,7 @@ pub fn filename<'a> (path: &'a str) -> &'a str {
 #[macro_export] macro_rules! try_fus {
   ($e: expr) => {match $e {
     Ok (ok) => ok,
-    Err (err) => {return Box::new (futures::future::err (ERRL! ("{}", err)))}}}}
+    Err (err) => {return Box::new (futures01::future::err (ERRL! ("{}", err)))}}}}
 
 /// Prepends file name and line number to the given message.
 #[macro_export] macro_rules! ERRL {
