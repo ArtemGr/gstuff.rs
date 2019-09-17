@@ -469,11 +469,11 @@ macro_rules! find_parse_replace_s {
 
   ($i: expr, $starts: expr, $f: expr) => (find_parse_replace_s! ($i, $starts, call! ($f)););}
 
-// TODO: Consider targeting a CPU instead of an OS here.
+// Consider targeting a CPU here.
+// https://github.com/rust-lang/rust/issues/44036
 
 /// Time Stamp Counter (number of cycles).
-#[cfg(feature = "nightly")]
-#[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
+#[cfg(all(feature = "nightly", feature = "rdtsc"))]
 pub fn rdtsc() -> u64 {
   // https://stackoverflow.com/a/7617612/257568
   // https://github.com/gz/rust-x86/blob/master/src/bits64/time.rs
@@ -483,7 +483,7 @@ pub fn rdtsc() -> u64 {
     asm!("rdtsc" : "={eax}" (low), "={edx}" (high) ::: "volatile");
     ((high as u64) << 32) | (low as u64)}}
 
-#[cfg(feature = "nightly")]
+#[cfg(all(feature = "nightly", feature = "rdtsc"))]
 #[test] fn test_rdtsc() {
   assert! (rdtsc() != rdtsc())}
 

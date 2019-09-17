@@ -1,6 +1,6 @@
 [package]
 name = "gstuff"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2018"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
@@ -16,6 +16,7 @@ doctest = false
 
 [features]
 nightly = ["atomic/nightly"]
+rdtsc = []
 
 [dependencies]
 atomic = "0.4"
