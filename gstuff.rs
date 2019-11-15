@@ -499,7 +499,7 @@ pub struct FileLock<'a> {
 impl<'a> FileLock<'a> {
   /// Tries to obtain a file lock.
   /// 
-  /// Returns `None` if the file already exists and is recent enough.
+  /// No blocking. Returns `None` if the file already exists and is recent enough (= locked).
   ///
   /// The returned structure will automatically remove the lock file when dropped.
   /// 
