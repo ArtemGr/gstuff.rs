@@ -3,7 +3,7 @@
 // https://github.com/rust-lang/rust/issues/57563
 #![cfg_attr(feature = "nightly", feature(const_fn))]
 
-#[macro_use] extern crate lazy_static;
+#[allow(unused_imports)] #[macro_use] extern crate lazy_static;
 extern crate libc;
 #[cfg(feature = "term")] extern crate term;
 #[cfg(feature = "term_size")] extern crate term_size;
@@ -14,11 +14,11 @@ use std::fs;
 use std::fmt;
 use std::io::{self, Read};
 use std::marker::PhantomData;
-use std::os::raw::c_int;
+#[allow(unused_imports)] use std::os::raw::c_int;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::str::{from_utf8_unchecked, FromStr};
-use std::sync::Mutex;
+#[allow(unused_imports)] use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(test)] use std::thread::sleep;
@@ -101,16 +101,49 @@ pub fn filename<'a> (path: &'a str) -> &'a str {
 
 // --- status line -------
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "term", not(target_arch = "wasm32")))]
 fn isatty (fd: c_int) -> c_int {unsafe {libc::isatty (fd)}}
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(feature = "term", target_arch = "wasm32"))]
 fn isatty (_fd: c_int) -> c_int {0}
 
+#[cfg(feature = "term")]
 lazy_static! {
   static ref STATUS_LINE: Mutex<String> = Mutex::new (String::new());
   /// True if the standard output is a terminal.
-  pub static ref ISATTY: bool = isatty (1) != 0;}
+  pub static ref ISATTY: bool = isatty (1) != 0;
+  pub static ref STATUS_LINE_LM: Atomic<u64> = Atomic::new (0);}
+
+/// The time of the last status line update, in milliseconds.  
+/// Tracked in order to help the calling code with implementing debounce strategies
+/// (for sending each and every update to the terminal might be a bottleneck,
+/// plus it might flicker
+/// and might be changing too fast for a user to register the content).
+#[cfg(feature = "term")]
+#[inline]
+pub fn status_line_lm() -> u64 {STATUS_LINE_LM.load (Ordering::Relaxed)}
+
+/// Reset `status_line_lm` value to 0.  
+/// Useful for triggering a status line flush in a code that uses a delta from `status_line_lm` to debounce.
+#[cfg(feature = "term")]
+#[inline]
+pub fn status_line_lm0() {STATUS_LINE_LM.store (0, Ordering::Relaxed)}
+
+/// Clear the rest of the line.
+#[cfg(feature = "term")]
+fn delete_line (stdout: &mut Box<term::StdoutTerminal>) {
+  use io::Write;
+
+  // NB: term's `delete_line` is really screwed.
+  // Sometimes it doesn't work. And when it does, it does it wrong.
+  // Documentation says it "Deletes the text from the cursor location to the end of the line"
+  // but when it works it clears the *entire* line instead.
+  // I should probably find something better than term, unless it's `delete_line` is fixed first.
+
+  if cfg! (windows) {
+    let _ = stdout.delete_line();
+  } else {
+    let _ = stdout.get_mut().write (b"\x1B[K");}}  // EL0. Clear right.
 
 /// Clears the line to the right, prints the given text, moves the caret all the way to the left.
 ///
@@ -144,6 +177,8 @@ pub fn status_line (file: &str, line: u32, status: String) {
       let _ = write! (&mut *status_line, "{}:{}] {}", filename (file), line, status);
       let new_hash = {let mut hasher = DefaultHasher::new(); hasher.write (status_line.as_bytes()); hasher.finish()};
       if old_hash != new_hash {
+        STATUS_LINE_LM.store (now_ms(), Ordering::Relaxed);
+
         // Try to keep the status line withing the terminal bounds.
         match term_size::dimensions() {
           Some ((w, _)) if status_line.chars().count() >= w => {
@@ -152,21 +187,11 @@ pub fn status_line (file: &str, line: u32, status: String) {
             let _ = stdout.get_mut().write (tmp.as_bytes());},
           _ => {let _ = stdout.get_mut().write (status_line.as_bytes());}};
 
-        // Clear the rest of the line.
-
-        // NB: term's `delete_line` is really screwed.
-        // Sometimes it doesn't work. And when it does, it does it wrong.
-        // Documentation says it "Deletes the text from the cursor location to the end of the line"
-        // but when it works it clears the *entire* line instead.
-        // I should probably find something better than term, unless it's `delete_line` is fixed first.
-
-        //let _ = stdout.delete_line();
-        let _ = stdout.get_mut().write (b"\x1B[K");  // EL0. Clear right.
-
+        delete_line (&mut stdout);
         let _ = stdout.carriage_return();
         let _ = stdout.get_mut().flush();}}}}
 
-/// Clears the status line ff stdout `isatty` and `status_line` isn't empty.
+/// Clears the status line if stdout `isatty` and `status_line` isn't empty.
 #[cfg(feature = "term")]
 pub fn status_line_clear() {
   use io::Write;
@@ -174,9 +199,9 @@ pub fn status_line_clear() {
   if let Ok (mut status_line) = STATUS_LINE.lock() {
     if *ISATTY && !status_line.is_empty() {
       if let Some (mut stdout) = term::stdout() {
+        STATUS_LINE_LM.store (now_ms(), Ordering::Relaxed);
         status_line.clear();
-        //let _ = stdout.delete_line();
-        let _ = stdout.get_mut().write (b"\x1B[K");  // EL0. Clear right.
+        delete_line (&mut stdout);
         let _ = stdout.get_mut().flush();}}}}
 
 /// Clear the status line, run the code, then restore the status line.
@@ -190,8 +215,7 @@ pub fn with_status_line (code: &dyn Fn()) {
     if !*ISATTY || status_line.is_empty() {
       code()
     } else if let Some (mut stdout) = term::stdout() {
-      //let _ = stdout.delete_line();
-      let _ = stdout.get_mut().write (b"\x1B[K");  // EL0. Clear right.
+      delete_line (&mut stdout);
       let _ = stdout.get_mut().flush();  // We need to send this EL0 out because the $code might be writing to stderr and thus miss it.
       code();
       // TODO: Should probably use `term_size::dimensions` to limit the status line size, just like in `fn status_line`.
