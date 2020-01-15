@@ -668,7 +668,10 @@ pub fn binprint (bin: &[u8], blank: u8) -> String {
   unsafe {String::from_utf8_unchecked (bin)}}
 
 /// A cell that can be initialized, but only once.  
-/// Once initialized the cell remains immutable, allowing us to alias the value.
+/// Once initialized the cell remains immutable, allowing us to alias the value.  
+/// 
+/// NB: There is a similar abstraction at https://github.com/matklad/once_cell.
+/// (I've only just discovered it, some months after implementing the `Constructible` myself).
 pub struct Constructible<T> {
   /// A pinned `Box` pointer, or 0 if not initialized.
   value: Atomic<usize>,
