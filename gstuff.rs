@@ -348,6 +348,10 @@ pub fn any_to_str<'a> (message: &'a dyn Any) -> Option<&'a str> {
 pub fn duration_to_float (duration: Duration) -> f64 {
   duration.as_secs() as f64 + ((duration.subsec_nanos() as f64) / 1000000000.0)}
 
+/// Converts time in milliseconds into a number of seconds with fractions.
+pub fn ms2sec (ms: u64) -> f64 {
+  (ms / 1000) as f64 + ((ms % 1000) as f64 / 1000.0)}
+
 /// The current number of seconds since UNIX epoch, with fractions.
 ///
 /// cf. http://stackoverflow.com/a/26878367/257568 (C++, Boost).
