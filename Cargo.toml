@@ -1,6 +1,6 @@
 [package]
 name = "gstuff"
-version = "0.6.3"
+version = "0.6.4"
 edition = "2018"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
@@ -16,11 +16,15 @@ doctest = false
 
 [features]
 nightly = ["atomic/nightly"]
+base62 = ["num-bigint", "num-traits", "smallvec"]
 rdtsc = []
 
 [dependencies]
 atomic = "0.4"
 lazy_static = "1"
 libc = "0.2"
+num-bigint = {version = "0.2", optional = true}
+num-traits = {version = "0.2", optional = true}
+smallvec = {version = "1.3", optional = true, features = ["const_generics", "union", "write"]}
 term = {version = "0.6", optional = true}
 term_size = {version = "0.3", optional = true}

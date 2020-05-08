@@ -1,7 +1,12 @@
+#![feature(non_ascii_idents)]
+#![allow(unknown_lints, uncommon_codepoints)]
+
 #![cfg_attr(feature = "nightly", feature(asm))]
 
 // https://github.com/rust-lang/rust/issues/57563
 #![cfg_attr(feature = "nightly", feature(const_fn))]
+
+#![cfg_attr(feature = "nightly", feature(test))]
 
 #[allow(unused_imports)] #[macro_use] extern crate lazy_static;
 extern crate libc;
@@ -98,6 +103,8 @@ pub fn filename<'a> (path: &'a str) -> &'a str {
 #[macro_export] macro_rules! ERR {
   ($format: expr, $($args: tt)+) => {Err (ERRL! ($format, $($args)+))};
   ($format: expr) => {Err (ERRL! ($format))}}
+
+#[cfg(feature = "base62")] pub mod base62;
 
 // --- status line -------
 
@@ -557,6 +564,7 @@ impl<'a> FileLock<'a> {
   /// Compile on Linux only as UTIME_NOW and futimens is absent on MacOS.
   #[cfg(target_os = "linux")]
   pub fn touch (&self) -> Result<(), String> {
+    // TODO: Consider using https://crates.io/crates/filetime as an optional dependency
     let ts = libc::timespec {tv_sec: 0, tv_nsec: libc::UTIME_NOW};
     let times = [ts, ts];
     use std::os::unix::io::AsRawFd;
