@@ -4,7 +4,7 @@
 #![cfg_attr(feature = "nightly", feature(asm))]
 
 // https://github.com/rust-lang/rust/issues/57563
-#![cfg_attr(feature = "nightly", feature(const_fn))]
+#![cfg_attr(feature = "nightly", feature(const_fn, const_panic, const_loop, const_if_match))]
 
 #![cfg_attr(feature = "nightly", feature(test))]
 
@@ -106,6 +106,8 @@ pub fn filename<'a> (path: &'a str) -> &'a str {
 
 #[cfg(feature = "base62")] pub mod base62;
 
+#[cfg(all(feature = "base91", feature = "nightly"))] pub mod base91;
+
 // --- status line -------
 
 #[cfg(all(feature = "term", not(target_arch = "wasm32")))]
@@ -127,13 +129,11 @@ lazy_static! {
 /// plus it might flicker
 /// and might be changing too fast for a user to register the content).
 #[cfg(feature = "term")]
-#[inline]
 pub fn status_line_lm() -> u64 {STATUS_LINE_LM.load (Ordering::Relaxed)}
 
 /// Reset `status_line_lm` value to 0.  
 /// Useful for triggering a status line flush in a code that uses a delta from `status_line_lm` to debounce.
 #[cfg(feature = "term")]
-#[inline]
 pub fn status_line_lm0() {STATUS_LINE_LM.store (0, Ordering::Relaxed)}
 
 /// Clear the rest of the line.

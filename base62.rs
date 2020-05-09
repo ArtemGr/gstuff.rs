@@ -7,7 +7,7 @@ use std::fmt;
 use std::str::from_utf8_unchecked;
 
 /// Prints BigInt in Base62
-pub struct Bi62<'a> (&'a BigInt);
+pub struct Bi62<'a> (pub &'a BigInt);
 impl<'a> fmt::Display for Bi62<'a> {
   fn fmt (&self, ft: &mut fmt::Formatter) -> fmt::Result {
     let mut buf: SmallVec<[u8; 32]> = SmallVec::new();
@@ -15,7 +15,7 @@ impl<'a> fmt::Display for Bi62<'a> {
     ft.write_str (unsafe {from_utf8_unchecked (&buf)})}}
 
 /// Prints u64 in Base62
-pub struct U62 (u64);
+pub struct U62 (pub u64);
 impl fmt::Display for U62 {
   fn fmt (&self, ft: &mut fmt::Formatter) -> fmt::Result {
     let mut buf: SmallVec<[u8; 32]> = SmallVec::new();
