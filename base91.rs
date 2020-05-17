@@ -1,4 +1,4 @@
-use smallvec::{Array, SmallVec};
+use smallvec::SmallVec;
 use std::fmt;
 use std::io::{self, Write};
 use std::str::from_utf8_unchecked;
@@ -12,8 +12,6 @@ pub struct Base91Tables {
 const BASE: usize = 91;
 const UNDEFINED: i32 = -1;
 
-pub const AVERAGE_ENCODING_RATIO: f64 = 1.2297;
-
 impl Base91Tables {
   const fn new (alphabet: &'static [u8]) -> Base91Tables {
     if alphabet.len() != BASE {panic! ("Wrong alphabet length")}
@@ -26,18 +24,37 @@ impl Base91Tables {
       if ofs == BASE {break}}
     Base91Tables {alphabet, decoding_table}}
 
-  pub fn encode<A: Array<Item=u8>> (&'static self, payload: &[u8], sv: &mut SmallVec<A>) -> io::Result<()> {
-    let mut b91o = Base91Output::new (self, sv);
-    b91o.write (payload) ?;
-    b91o.flush() ?;
-    Ok(())}
+  pub fn encode<P> (&'static self, payload: &[u8], mut push: P) where P: FnMut(u8) {
+    let mut ebq: usize = 0;
+    let mut en: u8 = 0;
 
-  pub fn decode<A: Array<Item=u8>> (&self, payload: &[u8], sv: &mut SmallVec<A>) -> Result<(), String> {
+    for &ch in payload {
+      ebq |= (ch as usize) << en as usize;
+      en += 8;
+      if en > 13 {
+        let mut ev = ebq & 8191;
+
+        if ev > 88 {
+          ebq >>= 13;
+          en -= 13;
+        } else {
+          ev = ebq & 16383;
+          ebq >>= 14;
+          en -= 14}
+
+        push (self.alphabet[ev % BASE]);
+        push (self.alphabet[ev / BASE])}}
+
+    if en > 0 {
+      push (self.alphabet[ebq % BASE]);
+      if en > 7 || ebq > 90 {
+        push (self.alphabet[ebq / BASE])}}}
+
+  pub fn decode<P> (&self, payload: &[u8], mut push: P) -> Result<(), String> where P: FnMut(u8) {
     let mut dbq = 0;
     let mut dn = 0;
     let mut dv = UNDEFINED;
 
-    sv.reserve ((payload.len() as f64 / AVERAGE_ENCODING_RATIO).ceil() as usize);
     for ix in 0 .. payload.len() {
       let ch = payload[ix];
       let ofs = self.decoding_table[ch as usize] as i32;
@@ -50,13 +67,13 @@ impl Base91Tables {
         dbq |= dv << dn;
         dn += if (dv & 8191) > 88 {13} else {14};
         loop {
-          sv.push (dbq as u8);
+          push (dbq as u8);
           dbq >>= 8;
           dn -= 8;
           if dn < 8 {break}}
         dv = UNDEFINED}}
 
-    if dv != UNDEFINED {sv.push ((dbq | dv << dn) as u8)}
+    if dv != UNDEFINED {push ((dbq | dv << dn) as u8)}
     Ok(())}}
 
 pub const BASE91NORM: Base91Tables = Base91Tables::new (
@@ -67,30 +84,19 @@ pub const BASE91JS: Base91Tables = Base91Tables::new (
   b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!#$%&()*+,./:;<=>?@[]^_`{|}~'");
 
 /// Can be used with `fmt` to print the wrapped `payload` in Base91
-pub struct Base91Display<'a, 'b> {
-  pub tables: &'a Base91Tables,
-  pub payload: &'b [u8]}
+pub struct Base91Display<'a> {
+  pub tables: &'static Base91Tables,
+  pub payload: &'a [u8]}
 
-impl<'a, 'b> fmt::Debug for Base91Display<'a, 'b> {
+impl<'a> fmt::Debug for Base91Display<'a> {
   fn fmt (&self, ft: &mut fmt::Formatter) -> fmt::Result {
     fmt::Display::fmt (&self, ft)}}
 
-impl<'a, 'b> fmt::Display for Base91Display<'a, 'b> {
+impl<'a> fmt::Display for Base91Display<'a> {
   fn fmt (&self, ft: &mut fmt::Formatter) -> fmt::Result {
-    struct Ascii<'a, 'b> {ft: &'a mut fmt::Formatter<'b>}
-    impl<'a, 'b> Write for Ascii<'a, 'b> {
-      fn flush (&mut self) -> io::Result<()> {Ok(())}
-      fn write (&mut self, buf: &[u8]) -> io::Result<usize> {
-        let rc = self.ft.write_str (unsafe {from_utf8_unchecked (buf)});
-        if let Err (_err) = rc {return Err (io::Error::new (io::ErrorKind::Other, "fmt::Error"))}
-        Ok (buf.len())}}
-    let mut ascii = Ascii {ft};
-    let mut b91o = Base91Output::new (self.tables, &mut ascii);
-    let rc = b91o.write (self.payload);
-    if let Err (_err) = rc {return Err (fmt::Error)}
-    let rc = b91o.flush();
-    if let Err (_err) = rc {return Err (fmt::Error)}
-    Ok(())}}
+    let mut buf = SmallVec::<[u8; 256]>::new();
+    self.tables.encode (self.payload, |ch| buf.push (ch));
+    ft.write_str (unsafe {from_utf8_unchecked (&buf[..])})}}
 
 /// Streaming Base91 encoder
 pub struct Base91Output<'a, 'b> {
@@ -135,6 +141,11 @@ impl<'a, 'b> Write for Base91Output<'a, 'b> {
         self.wr.write_all (&pair[..1]) ?}}
     Ok(())}}
 
+pub const AVERAGE_ENCODING_RATIO: f64 = 1.2297;
+
+pub fn capacity_hint (base91len: usize) -> usize {
+  (base91len as f64 / AVERAGE_ENCODING_RATIO).ceil() as usize}
+
 #[cfg(all(test, feature = "nightly"))] mod test {
   extern crate test;
 
@@ -159,7 +170,7 @@ impl<'a, 'b> Write for Base91Output<'a, 'b> {
       assert_eq! (&buf[..], *b91samp);
 
       let mut debuf = SmallVec::<[u8; 256]>::new();
-      BASE91NORM.decode (b91samp, &mut debuf) .unwrap();
+      BASE91NORM.decode (b91samp, |ch| debuf.push (ch)) .unwrap();
       assert_eq! (&debuf[..], *plain)}}
 
   #[bench] fn base91encᵇ (bm: &mut test::Bencher) {
@@ -167,7 +178,8 @@ impl<'a, 'b> Write for Base91Output<'a, 'b> {
     let payload = b"foobar; foobar; foobar; foobar; foobar; foobar; foobar; foobar; foobar; foobar";
     bm.iter (|| {
       buf.clear();
-      test::black_box (BASE91JS.encode (test::black_box (payload), &mut buf)) .unwrap()});
+      BASE91JS.encode (test::black_box (payload), |ch| buf.push (ch));
+      test::black_box (&buf[..]);});
     bm.bytes = payload.len() as u64}
 
   #[bench] fn base91formatᵇ (bm: &mut test::Bencher) {
