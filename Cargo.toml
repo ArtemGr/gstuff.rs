@@ -1,6 +1,6 @@
 [package]
 name = "gstuff"
-version = "0.6.6"
+version = "0.6.7"
 edition = "2018"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
@@ -15,13 +15,12 @@ path = "gstuff.rs"
 doctest = false
 
 [features]
-nightly = ["atomic/nightly"]
+nightly = []
 base62 = ["num-bigint", "num-traits", "smallvec"]
 base91 = ["smallvec"]
 rdtsc = []
 
 [dependencies]
-atomic = "0.4"
 lazy_static = "1"
 libc = "0.2"
 num-bigint = {version = "0.2", optional = true}

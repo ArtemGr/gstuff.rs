@@ -13,7 +13,6 @@ extern crate libc;
 #[cfg(feature = "term")] extern crate term;
 #[cfg(feature = "term_size")] extern crate term_size;
 
-use atomic::Atomic;
 use std::any::Any;
 use std::fs;
 use std::fmt;
@@ -24,7 +23,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::str::{from_utf8_unchecked, FromStr};
 #[allow(unused_imports)] use std::sync::Mutex;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(test)] use std::thread::sleep;
 
@@ -121,7 +120,7 @@ lazy_static! {
   static ref STATUS_LINE: Mutex<String> = Mutex::new (String::new());
   /// True if the standard output is a terminal.
   pub static ref ISATTY: bool = isatty (1) != 0;
-  pub static ref STATUS_LINE_LM: Atomic<u64> = Atomic::new (0);}
+  pub static ref STATUS_LINE_LM: AtomicUsize = AtomicUsize::new (0);}
 
 /// The time of the last status line update, in milliseconds.  
 /// Tracked in order to help the calling code with implementing debounce strategies
@@ -129,7 +128,7 @@ lazy_static! {
 /// plus it might flicker
 /// and might be changing too fast for a user to register the content).
 #[cfg(feature = "term")]
-pub fn status_line_lm() -> u64 {STATUS_LINE_LM.load (Ordering::Relaxed)}
+pub fn status_line_lm() -> u64 {STATUS_LINE_LM.load (Ordering::Relaxed) as u64}
 
 /// Reset `status_line_lm` value to 0.  
 /// Useful for triggering a status line flush in a code that uses a delta from `status_line_lm` to debounce.
@@ -184,7 +183,7 @@ pub fn status_line (file: &str, line: u32, status: String) {
       let _ = write! (&mut *status_line, "{}:{}] {}", filename (file), line, status);
       let new_hash = {let mut hasher = DefaultHasher::new(); hasher.write (status_line.as_bytes()); hasher.finish()};
       if old_hash != new_hash {
-        STATUS_LINE_LM.store (now_ms(), Ordering::Relaxed);
+        STATUS_LINE_LM.store (now_ms() as usize, Ordering::Relaxed);
 
         // Try to keep the status line withing the terminal bounds.
         match term_size::dimensions() {
@@ -206,7 +205,7 @@ pub fn status_line_clear() {
   if let Ok (mut status_line) = STATUS_LINE.lock() {
     if *ISATTY && !status_line.is_empty() {
       if let Some (mut stdout) = term::stdout() {
-        STATUS_LINE_LM.store (now_ms(), Ordering::Relaxed);
+        STATUS_LINE_LM.store (now_ms() as usize, Ordering::Relaxed);
         status_line.clear();
         delete_line (&mut stdout);
         let _ = stdout.get_mut().flush();}}}}
@@ -686,14 +685,14 @@ pub fn binprint (bin: &[u8], blank: u8) -> String {
 /// (I've only just discovered it, some months after implementing the `Constructible` myself).
 pub struct Constructible<T> {
   /// A pinned `Box` pointer, or 0 if not initialized.
-  value: Atomic<usize>,
+  value: AtomicUsize,
   _phantom: std::marker::PhantomData<T>}
 
 /// Creates a cell without a value.  
 /// Use `pin` or `initialize` to provide the value later.
 impl<T> Default for Constructible<T> {
   fn default() -> Constructible<T> {Constructible {
-    value: Atomic::new (0),
+    value: AtomicUsize::new (0),
     _phantom: PhantomData}}}
 
 /// Pre-initialize the cell with the given value.
@@ -702,7 +701,7 @@ impl<T> From<T> for Constructible<T> {
     let v = Box::new (v);
     let v = Box::into_raw (v);
     Constructible {
-      value: Atomic::new (v as usize),
+      value: AtomicUsize::new (v as usize),
       _phantom: PhantomData}}}
 
 /// Translate an `Option` into a `Constructible` cell.  
@@ -737,7 +736,7 @@ impl<T> Constructible<T> {
   #[cfg(feature = "nightly")]
   pub const fn new() -> Constructible<T> {
     Constructible {
-      value: Atomic::new (0),
+      value: AtomicUsize::new (0),
       _phantom: PhantomData}}
 
   /// Provides the cell with the value.  
