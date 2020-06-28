@@ -510,11 +510,11 @@ macro_rules! find_parse_replace_s {
 #[cfg(all(feature = "nightly", feature = "rdtsc"))]
 pub fn rdtsc() -> u64 {
   // https://stackoverflow.com/a/7617612/257568
-  // https://github.com/gz/rust-x86/blob/master/src/bits64/time.rs
   // https://stackoverflow.com/a/48100158/257568
-  #[allow(unused_mut)] unsafe {
+  // https://github.com/Amanieu/rfcs/blob/inline-asm/text/0000-inline-asm.md
+  unsafe {
     let mut low: u32; let mut high: u32;
-    asm!("rdtsc" : "={eax}" (low), "={edx}" (high) ::: "volatile");
+    asm! ("rdtsc", lateout ("eax") low, lateout ("edx") high, options (nomem, nostack));
     ((high as u64) << 32) | (low as u64)}}
 
 #[cfg(all(feature = "nightly", feature = "rdtsc"))]
