@@ -10,8 +10,7 @@
 
 #[allow(unused_imports)] #[macro_use] extern crate lazy_static;
 extern crate libc;
-#[cfg(feature = "term")] extern crate term;
-#[cfg(feature = "term_size")] extern crate term_size;
+#[cfg(feature = "crossterm")] extern crate crossterm;
 
 use std::any::Any;
 use std::fs;
@@ -109,13 +108,13 @@ pub fn filename<'a> (path: &'a str) -> &'a str {
 
 // --- status line -------
 
-#[cfg(all(feature = "term", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "crossterm", not(target_arch = "wasm32")))]
 fn isatty (fd: c_int) -> c_int {unsafe {libc::isatty (fd)}}
 
-#[cfg(all(feature = "term", target_arch = "wasm32"))]
+#[cfg(all(feature = "crossterm", target_arch = "wasm32"))]
 fn isatty (_fd: c_int) -> c_int {0}
 
-#[cfg(feature = "term")]
+#[cfg(feature = "crossterm")]
 lazy_static! {
   static ref STATUS_LINE: Mutex<String> = Mutex::new (String::new());
   /// True if the standard output is a terminal.
@@ -127,18 +126,21 @@ lazy_static! {
 /// (for sending each and every update to the terminal might be a bottleneck,
 /// plus it might flicker
 /// and might be changing too fast for a user to register the content).
-#[cfg(feature = "term")]
+#[cfg(feature = "crossterm")]
 pub fn status_line_lm() -> u64 {STATUS_LINE_LM.load (Ordering::Relaxed) as u64}
 
 /// Reset `status_line_lm` value to 0.  
 /// Useful for triggering a status line flush in a code that uses a delta from `status_line_lm` to debounce.
-#[cfg(feature = "term")]
+#[cfg(feature = "crossterm")]
 pub fn status_line_lm0() {STATUS_LINE_LM.store (0, Ordering::Relaxed)}
 
 /// Clear the rest of the line.
-#[cfg(feature = "term")]
-fn delete_line (stdout: &mut Box<term::StdoutTerminal>) {
-  use io::Write;
+#[cfg(feature = "crossterm")]
+fn delete_line (stdout: &mut io::Stdout) {
+  use crossterm::{terminal, QueueableCommand};
+
+  let _ = stdout.queue (terminal::Clear (terminal::ClearType::UntilNewLine));}
+// ^^ Checking whether crossterm will do better than term
 
   // NB: term's `delete_line` is really screwed.
   // Sometimes it doesn't work. And when it does, it does it wrong.
@@ -146,10 +148,9 @@ fn delete_line (stdout: &mut Box<term::StdoutTerminal>) {
   // but when it works it clears the *entire* line instead.
   // I should probably find something better than term, unless it's `delete_line` is fixed first.
 
-  if cfg! (windows) {
-    let _ = stdout.delete_line();
-  } else {
-    let _ = stdout.get_mut().write (b"\x1B[K");}}  // EL0. Clear right.
+//  if cfg! (windows) {
+//  } else {
+//    let _ = stdout.write (b"\x1B[K");}}  // EL0. Clear right.
 
 /// Clears the line to the right, prints the given text, moves the caret all the way to the left.
 ///
@@ -169,14 +170,15 @@ fn delete_line (stdout: &mut Box<term::StdoutTerminal>) {
 ///     use gstuff::{status_line, ISATTY};
 ///     macro_rules! status_line {($($args: tt)+) => {if *ISATTY {
 ///       status_line (file!(), line!(), fomat! ($($args)+))}}}
-#[cfg(all(feature = "term", feature = "term_size"))]
+#[cfg(all(feature = "crossterm"))]
 pub fn status_line (file: &str, line: u32, status: String) {
-  use io::Write;
+  use crossterm::{QueueableCommand, cursor};
+  use io::{stdout, Write};
   use std::collections::hash_map::DefaultHasher;
   use std::hash::Hasher;
 
-  if let Some (mut stdout) = term::stdout() {
     if let Ok (mut status_line) = STATUS_LINE.lock() {
+      let mut stdout = stdout();
       let old_hash = {let mut hasher = DefaultHasher::new(); hasher.write (status_line.as_bytes()); hasher.finish()};
       status_line.clear();
       use std::fmt::Write;
@@ -186,50 +188,52 @@ pub fn status_line (file: &str, line: u32, status: String) {
         STATUS_LINE_LM.store (now_ms() as usize, Ordering::Relaxed);
 
         // Try to keep the status line withing the terminal bounds.
-        match term_size::dimensions() {
-          Some ((w, _)) if status_line.chars().count() >= w => {
-            let mut tmp = String::with_capacity (w - 1);
-            for ch in status_line.chars().take (w - 1) {tmp.push (ch)}
-            let _ = stdout.get_mut().write (tmp.as_bytes());},
-          _ => {let _ = stdout.get_mut().write (status_line.as_bytes());}};
+        match crossterm::terminal::size() {
+          Ok ((w, _)) if status_line.chars().count() >= w as usize => {
+            let mut tmp = String::with_capacity (w as usize - 1);
+            for ch in status_line.chars().take (w as usize - 1) {tmp.push (ch)}
+            let _ = stdout.write (tmp.as_bytes());},
+          _ => {let _ = stdout.write (status_line.as_bytes());}};
 
         delete_line (&mut stdout);
-        let _ = stdout.carriage_return();
-        let _ = stdout.get_mut().flush();}}}}
+        let _ = stdout.queue (cursor::MoveToColumn (0));
+        let _ = stdout.flush();}}}
 
 /// Clears the status line if stdout `isatty` and `status_line` isn't empty.
-#[cfg(feature = "term")]
+#[cfg(feature = "crossterm")]
 pub fn status_line_clear() {
-  use io::Write;
+  use io::{stdout, Write};
 
   if let Ok (mut status_line) = STATUS_LINE.lock() {
     if *ISATTY && !status_line.is_empty() {
-      if let Some (mut stdout) = term::stdout() {
+      let mut stdout = stdout();
         STATUS_LINE_LM.store (now_ms() as usize, Ordering::Relaxed);
         status_line.clear();
         delete_line (&mut stdout);
-        let _ = stdout.get_mut().flush();}}}}
+        let _ = stdout.flush();}}}
 
 /// Clear the status line, run the code, then restore the status line.
 ///
 /// Simply runs the `code` if the stdout is not `isatty` or if the status line is empty.
-#[cfg(feature = "term")]
+#[cfg(feature = "crossterm")]
 pub fn with_status_line (code: &dyn Fn()) {
-  use io::Write;
+  use crossterm::{QueueableCommand, cursor};
+  use io::{stdout, Write};
 
   if let Ok (status_line) = STATUS_LINE.lock() {
     if !*ISATTY || status_line.is_empty() {
       code()
-    } else if let Some (mut stdout) = term::stdout() {
+    } else {
+      let mut stdout = stdout();
       delete_line (&mut stdout);
-      let _ = stdout.get_mut().flush();  // We need to send this EL0 out because the $code might be writing to stderr and thus miss it.
+      let _ = stdout.flush();  // We need to send this EL0 out because the $code might be writing to stderr and thus miss it.
       code();
       // TODO: Should probably use `term_size::dimensions` to limit the status line size, just like in `fn status_line`.
-      let _ = stdout.get_mut().write (status_line.as_bytes());
-      let _ = stdout.carriage_return();
-      let _ = stdout.get_mut().flush();}}}
+      let _ = stdout.write (status_line.as_bytes());
+      let _ = stdout.queue (cursor::MoveToColumn (0));
+      let _ = stdout.flush();}}}
 
-#[cfg(feature = "term")]
+#[cfg(feature = "crossterm")]
 #[test] fn test_status_line() {
   with_status_line (&|| println! ("hello world"));}
 
