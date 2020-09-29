@@ -4,7 +4,7 @@
 #![cfg_attr(feature = "nightly", feature(asm))]
 
 // https://github.com/rust-lang/rust/issues/57563
-#![cfg_attr(feature = "nightly", feature(const_fn, const_panic, const_loop, const_if_match))]
+#![cfg_attr(feature = "nightly", feature(const_fn, const_panic))]
 
 #![cfg_attr(feature = "nightly", feature(test))]
 
@@ -105,6 +105,8 @@ pub fn filename<'a> (path: &'a str) -> &'a str {
 #[cfg(feature = "base62")] pub mod base62;
 
 #[cfg(all(feature = "base91", feature = "nightly"))] pub mod base91;
+
+#[cfg(feature = "winapi")] pub mod win;
 
 // --- status line -------
 
