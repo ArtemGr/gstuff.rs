@@ -101,7 +101,8 @@ impl DeviceContext {
     let rc = unsafe {SetPixelV (self.dc, x, y, RGB (r, g, b))};
     if rc == 0 {Err (unsafe {GetLastError()})} else {Ok(())}}
 
-  /// cf. https://docs.microsoft.com/en-us/windows/win32/gdi/colorref
+  /// cf. https://docs.microsoft.com/en-us/windows/win32/gdi/colorref  
+  /// NB: Looks like the window needs to be visible in order for `get_pixel` to work
   pub fn get_pixel (&self, x: i32, y: i32) -> Result<COLORREF, ()> {
     let rc = unsafe {GetPixel (self.dc, x as c_int, y as c_int)};
     if rc == CLR_INVALID {
@@ -109,8 +110,14 @@ impl DeviceContext {
     } else {
       Ok (rc)}}
 
-  /// Experimentally determine max `width` and `height` in pixels
+  /// Experimentally determine max `width` and `height` in pixels  
+  /// NB: Looks like the window needs to be visible in order for `get_pixel` to work
   pub fn scan_size (&mut self) {
+    if let Err (()) = self.get_pixel (1, 1) {  // Return early if `get_pixel` doesn't work (window hidden)
+      let errno = unsafe {GetLastError()};
+      if errno != 0 {(self.heh) ("get_pixel (1, 1)", errno)}
+      return}
+
     // NB: GetDeviceCaps with HORZRES and VERTRES returns bogus values
     //   GetWindowRect too: it seems to match results obtained
     //   multiplying GetConsoleFontSize by GetConsoleScreenBufferInfo/dwSize,
