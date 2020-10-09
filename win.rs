@@ -18,6 +18,7 @@ pub use winapi::um::wincontypes::CONSOLE_FONT_INFO;
 use winapi::um::wingdi::{GetPixel, SetPixelV, StretchDIBits,
   BITMAPINFOHEADER, BITMAPINFO, BI_RGB, CLR_INVALID, DIB_RGB_COLORS, GDI_ERROR, RGB, RGBQUAD, SRCCOPY};
 pub use winapi::um::winnt::HANDLE;
+use winapi::um::winnt::LONG;
 use winapi::um::winuser::{GetDC, ReleaseDC};
 
 pub struct DeviceContext {
@@ -28,9 +29,9 @@ pub struct DeviceContext {
   /// Hidden Error Handler: for when we can not return (such as in a `drop` RAII)
   pub heh: &'static dyn Fn (&'static str, DWORD),
   /// How wide can we paint, in pixels, set by `scan_size`
-  pub width: i32,
+  pub width: usize,
   /// How far can we paint, in pixels, set by `scan_size`
-  pub height: i32,
+  pub height: usize,
   /// Console Error: `STD_ERROR_HANDLE` retrieved with `GetStdHandle`,
   /// need it to get the font size and cursor position from the “console's active screen buffer”,
   /// to align graphics with text
@@ -80,12 +81,12 @@ impl DeviceContext {
   /// Paints the given `rgba`  
   /// Stretches the image if `w` <> `sw` or `h` <> `sh`  
   /// `rgba` position `i = iy * sw + ix`
-  pub fn stretch (&self, x: i32, y: i32, w: i32, h: i32, sx: i32, sy: i32, sw: i32, sh: i32, rgba: &[u32])
-  -> Result<i32, DWORD> {
+  pub fn stretch (&self, x: i32,  y: i32,  w: usize,  h: usize,
+                        sx: i32, sy: i32, sw: usize, sh: usize, rgba: &[u32]) -> Result<i32, DWORD> {
     let mut inf: BITMAPINFO = unsafe {MaybeUninit::zeroed().assume_init()};
     inf.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-    inf.bmiHeader.biWidth = sw;
-    inf.bmiHeader.biHeight = -sh;  // “top-down DIB”
+    inf.bmiHeader.biWidth = sw as LONG;
+    inf.bmiHeader.biHeight = - (sh as LONG);  // “top-down DIB”
     inf.bmiHeader.biPlanes = 1;
     inf.bmiHeader.biBitCount = 32;
     inf.bmiHeader.biCompression = BI_RGB;
@@ -93,7 +94,8 @@ impl DeviceContext {
 
     // https://docs.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-stretchdibits
     let rc = unsafe {StretchDIBits (
-      self.dc, x, y, w, h, sx, sy, sw, sh, rgba.as_ptr() as *const c_void, &inf, DIB_RGB_COLORS, SRCCOPY)};
+      self.dc, x,  y,  w as c_int,  h as c_int,
+              sx, sy, sw as c_int, sh as c_int, rgba.as_ptr() as *const c_void, &inf, DIB_RGB_COLORS, SRCCOPY)};
     if rc == 0 || rc as ULONG == GDI_ERROR {Err (unsafe {GetLastError()})} else {Ok (rc)}}
 
   /// cf. https://docs.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-setpixelv
@@ -127,7 +129,7 @@ impl DeviceContext {
     while self.get_pixel (width + 9, height) .is_ok() {width += 9}
     while self.get_pixel (width + 1, height) .is_ok() {width += 1}
     while self.get_pixel (width, height + 1) .is_ok() {height += 1}
-    self.width = width + 1; self.height = height + 1}
+    self.width = width as usize + 1; self.height = height as usize + 1}
 
   /// cf. https://docs.microsoft.com/en-us/windows/console/console-font-info-str
   pub fn font (&self) -> Result<CONSOLE_FONT_INFO, String> {
@@ -148,10 +150,10 @@ impl DeviceContext {
     // The actual character size in Windows might differ from the one reported in `CONSOLE_FONT_INFO`
     let (mut tw, mut th) = (1, 2);
     let sw = (sbi.srWindow.Right - sbi.srWindow.Left) as i16;
-    if sw > 0 {while (tw + 1) as i32 * sw as i32 <= self.width {tw += 1}}
+    if sw > 0 {while (tw + 1) as usize * sw as usize <= self.width {tw += 1}}
 
     let sh = (sbi.srWindow.Bottom - sbi.srWindow.Top) as i16 + 1;
-    if sh > 0 {while (th + 1) as i32 * sh as i32 <= self.height {th += 1}}
+    if sh > 0 {while (th + 1) as usize * sh as usize <= self.height {th += 1}}
     //println! ("\nself.height {} vs th*sh= {}; th {}\n", self.height, th as i16 * sh, th);
 
     Ok ((Translation {
@@ -178,7 +180,8 @@ pub struct Translation {
   /// Also with lines recently printed on
   /// the actual *paint* of characters by the terminal might happen after a small delay,
   /// overwriting whatever graphics we put there: should either wait for the terminal *paint* to settle
-  /// or better yet maintain a set of overlays to be redrawn periodically
+  /// or better yet maintain a set of overlays to be redrawn periodically  
+  /// Caps around `9000` by default, see https://stackoverflow.com/a/34161156/257568
   pub cya: i16,
   /// Vertical scrolling
   pub top: i16,
