@@ -1,4 +1,3 @@
-#![feature(non_ascii_idents)]
 #![allow(unknown_lints, uncommon_codepoints)]
 
 #![cfg_attr(feature = "nightly", feature(asm))]
@@ -317,7 +316,7 @@ pub fn slurp (path: &dyn AsRef<Path>) -> Vec<u8> {
 pub fn slurp_prog (command: &str) -> Result<String, String> {
   let output = match Command::new ("dash") .arg ("-c") .arg (command) .output() {
     Ok (output) => output,
-    Err (ref err) if err.kind() == io::ErrorKind::NotFound => {  // "sh" was not found, try a different name.
+    Err (ref err) if err.kind() == io::ErrorKind::NotFound => {  // "dash" was not found, try a different name.
       try_s! (Command::new ("sh") .arg ("-c") .arg (command) .output())},
     Err (err) => return ERR! ("{}", err)};
 

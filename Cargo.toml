@@ -1,6 +1,6 @@
 [package]
 name = "gstuff"
-version = "0.7.2"
+version = "0.7.3"
 edition = "2018"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
@@ -21,10 +21,10 @@ base91 = ["smallvec"]
 rdtsc = []
 
 [dependencies]
-crossterm = {version = "0.18", optional = true}
+crossterm = {version = "0.20", optional = true}
 lazy_static = "1"
 libc = "0.2"
-num-bigint = {version = "0.2", optional = true}
+num-bigint = {version = "0.4", optional = true}
 num-traits = {version = "0.2", optional = true}
 smallvec = {version = "1.4", optional = true, features = ["const_generics", "union", "write"]}
 winapi = {version = "0.3", optional = true, features = ["wingdi", "wincon", "winuser"]}
