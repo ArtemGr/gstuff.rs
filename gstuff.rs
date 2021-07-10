@@ -3,7 +3,7 @@
 #![cfg_attr(feature = "nightly", feature(asm))]
 
 // https://github.com/rust-lang/rust/issues/57563
-#![cfg_attr(feature = "nightly", feature(const_fn, const_panic))]
+#![cfg_attr(feature = "nightly", feature(const_panic))]
 
 #![cfg_attr(feature = "nightly", feature(test))]
 
