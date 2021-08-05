@@ -1,6 +1,6 @@
 [package]
 name = "gstuff"
-version = "0.7.4"
+version = "0.7.5"
 edition = "2018"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
@@ -17,6 +17,7 @@ doctest = false
 [features]
 nightly = []
 base62 = ["num-bigint", "num-traits", "smallvec"]
+base62j = ["smallvec"]
 base91 = ["smallvec"]
 rdtsc = []
 

@@ -102,6 +102,7 @@ pub fn filename<'a> (path: &'a str) -> &'a str {
   ($format: expr) => {Err (ERRL! ($format))}}
 
 #[cfg(feature = "base62")] pub mod base62;
+#[cfg(feature = "base62j")] pub mod base62j;
 
 #[cfg(all(feature = "base91", feature = "nightly"))] pub mod base91;
 
@@ -333,6 +334,7 @@ pub fn slurp_prog (command: &str) -> Result<String, String> {
   if output.status.success() {Ok (combined_output)} else {Err (combined_output)}}
 
 #[test] fn test_slurp_prog() {
+  if cfg! (windows) {println! ("Skipping as dash might be missing on Windows sometimes"); return}
   let foo = match slurp_prog ("echo foo") {Ok (foo) => foo, Err (err) => panic! ("{}", err)};
   assert_eq! (foo.trim(), "foo");}
 

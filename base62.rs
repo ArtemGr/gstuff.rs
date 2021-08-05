@@ -34,7 +34,7 @@ pub fn base62uenc<A: Array<Item=u8>> (mut ui: u64, sv: &mut SmallVec<A>) -> Resu
     ui /= 62; if ui == 0 {break}}
 
   let end = sv.len();
-  &sv[start..end].reverse();
+  sv[start..end].reverse();
   Ok(())}
 
 pub fn base62enc<A: Array<Item=u8>> (bi: &BigInt, sv: &mut SmallVec<A>) -> Result<(), String> {
@@ -57,7 +57,7 @@ pub fn base62enc<A: Array<Item=u8>> (bi: &BigInt, sv: &mut SmallVec<A>) -> Resul
     bu /= &base; if bu.is_zero() {break}}
 
   let end = sv.len();
-  &sv[start..end].reverse();
+  sv[start..end].reverse();
   Ok(())}
 
 /// Decode a base62 number
@@ -128,7 +128,7 @@ pub fn base62udec (bv: &[u8]) -> Result<u64, String> {
     assert! (format! ("{}", Bi62 (&(-124).into())) == "-20");
     assert! (format! ("{}", Bi62 (&(-999999999).into())) == "-15ftgF")}
 
-  // RUSTFLAGS=-Ctarget-cpu=native cargo bench
+  // cargo bench --features nightly,base62
 
   #[bench] fn base62uencᵇ (bm: &mut test::Bencher) {
     let mut buf: SmallVec<[u8; 32]> = SmallVec::new();
@@ -152,5 +152,4 @@ pub fn base62udec (bv: &[u8]) -> Result<u64, String> {
     bm.iter (|| {
       buf = bi.to_str_radix (36);
       test::black_box (&buf);});
-    assert! (buf == "gjdgxr")}
-}
+    assert! (buf == "gjdgxr")}}
