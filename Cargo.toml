@@ -1,6 +1,6 @@
 [package]
 name = "gstuff"
-version = "0.7.5"
+version = "0.7.6"
 edition = "2018"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
@@ -22,7 +22,7 @@ base91 = ["smallvec"]
 rdtsc = []
 
 [dependencies]
-crossterm = {version = "0.20", optional = true}
+crossterm = {version = "0.21", optional = true}
 lazy_static = "1"
 libc = "0.2"
 num-bigint = {version = "0.4", optional = true}
