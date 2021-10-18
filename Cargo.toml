@@ -1,6 +1,6 @@
 [package]
 name = "gstuff"
-version = "0.7.6"
+version = "0.7.7"
 edition = "2018"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
@@ -20,9 +20,11 @@ base62 = ["num-bigint", "num-traits", "smallvec"]
 base62j = ["smallvec"]
 base91 = ["smallvec"]
 rdtsc = []
+re = ["fomat-macros"]
 
 [dependencies]
 crossterm = {version = "0.21", optional = true}
+fomat-macros = {version = "0.3", optional = true}
 lazy_static = "1"
 libc = "0.2"
 num-bigint = {version = "0.4", optional = true}

@@ -2,10 +2,10 @@
 
 #![cfg_attr(feature = "nightly", feature(asm))]
 
-// https://github.com/rust-lang/rust/issues/57563
-#![cfg_attr(feature = "nightly", feature(const_panic))]
-
 #![cfg_attr(feature = "nightly", feature(test))]
+
+#![cfg_attr(feature = "re", feature(try_trait_v2))]
+#![cfg_attr(feature = "re", feature(never_type))]
 
 #[allow(unused_imports)] #[macro_use] extern crate lazy_static;
 extern crate libc;
@@ -107,6 +107,8 @@ pub fn filename<'a> (path: &'a str) -> &'a str {
 #[cfg(all(feature = "base91", feature = "nightly"))] pub mod base91;
 
 #[cfg(feature = "winapi")] pub mod win;
+
+#[cfg(feature = "re")] pub mod re;
 
 // --- status line -------
 
