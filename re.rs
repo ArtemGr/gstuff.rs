@@ -12,7 +12,7 @@ use super::filename;
 #[macro_export]
 macro_rules! fail {($($args: tt)+) => (return $crate::re::Re::fail (fomat! ($($args)+)))}
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 #[must_use = "this `Re` may be an `Err` variant, which should be handled"]
 pub enum Re<T> {Ok (T), Err (String)}
 
@@ -43,6 +43,13 @@ impl<T, O, E> FromResidual<Result<O, E>> for Re<T> where E: fmt::Display {
     let err = match x {Result::Ok (_) => unreachable!(), Result::Err (e) => e};
     let loc = Location::caller();
     let err = fomat! ((filename (loc.file())) ':' (loc.line()) "] " (err));
+    Re::Err (err)}}
+
+impl<T, O> FromResidual<Option<O>> for Re<T> {
+  #[track_caller]
+  fn from_residual (_: Option<O>) -> Self {
+    let loc = Location::caller();
+    let err = fomat! ((filename (loc.file())) ':' (loc.line()) "] Option is None");
     Re::Err (err)}}
 
 impl<T> Re<T> {
@@ -79,6 +86,13 @@ impl<T> Re<T> {
 
   use super::*;
 
+  #[test] fn opt() {
+    fn foo() -> Re<()> {
+      let bar: Option<String> = None;
+      bar?;
+      Re::Ok(())}
+    assert_eq! (foo(), Re::Err ("re:92] Option is None".into()))}
+
   // cargo bench --features nightly,re
 
   fn foobar (succ: bool) -> Re<bool> {
@@ -96,4 +110,4 @@ impl<T> Re<T> {
       assert! (e.ends_with ("] !succ"))})}
 
   #[bench] fn ok (bm: &mut test::Bencher) {
-    bm.iter (|| {bang (true) .expect ("!user")})}}
+    bm.iter (|| {bang (true) .expect ("!bang")})}}
