@@ -37,6 +37,16 @@ impl<T> FromResidual<Re<!>> for Re<T> {
     let err = fomat! ((filename (loc.file())) ':' (loc.line()) "] " (err));
     Re::Err (err)}}
 
+/// Allows `Re<_>` errors to chain into `Result<_, String>` errors
+/// which can be useful with libraries using `Result`, `OnceCell::get_or_try_init` for example
+impl<T, O> FromResidual<Re<O>> for Result<T, String> {
+  #[track_caller]
+  fn from_residual (x: Re<O>) -> Self {
+    let err = match x {Re::Ok (_) => unreachable!(), Re::Err (e) => e};
+    let loc = Location::caller();
+    let err = fomat! ((filename (loc.file())) ':' (loc.line()) "] " (err));
+    Result::Err (err)}}
+
 impl<T, O, E> FromResidual<Result<O, E>> for Re<T> where E: fmt::Display {
   #[track_caller]
   fn from_residual (x: Result<O, E>) -> Self {
@@ -91,7 +101,14 @@ impl<T> Re<T> {
       let bar: Option<String> = None;
       bar?;
       Re::Ok(())}
-    assert_eq! (foo(), Re::Err ("re:92] Option is None".into()))}
+    assert_eq! (foo(), Re::Err ("re:102] Option is None".into()))}
+
+  #[test] fn re2result() {
+    fn foo() -> Result<(), String> {
+      let bar: Re<()> = Re::fail ("ups");
+      bar?;
+      Result::Ok(())}
+    assert_eq! (foo(), Result::Err ("re:109] re:108] ups".into()))}
 
   // cargo bench --features nightly,re
 
