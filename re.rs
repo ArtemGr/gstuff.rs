@@ -22,6 +22,7 @@ impl<T> Termination for Re<T> {
     match self {
       Re::Ok (_) => 0,
       Re::Err (err) => {
+        eprintln! ("{}", err);
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         err.hash (&mut hasher);
@@ -112,15 +113,15 @@ impl<T> Re<T> {
       let bar: Option<String> = None;
       bar?;
       Re::Ok(())}
-    assert_eq! (foo(), Re::Err ("re:113] Option is None".into()));
-    assert_eq! (foo().report(), 7066472)}
+    assert_eq! (foo(), Re::Err ("re:114] Option is None".into()));
+    assert_eq! (foo().report(), 521090)}
 
   #[test] fn re2result() {
     fn foo() -> Result<(), String> {
       let bar: Re<()> = Re::fail ("ups");
       bar?;
       Result::Ok(())}
-    assert_eq! (foo(), Result::Err ("re:121] re:120] ups".into()));
+    assert_eq! (foo(), Result::Err ("re:122] re:121] ups".into()));
     assert_eq! (foo().report(), 1)}
 
   // cargo bench --features nightly,re
