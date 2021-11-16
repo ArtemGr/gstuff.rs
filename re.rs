@@ -7,6 +7,7 @@ use fomat_macros::fomat;
 use std::fmt;
 use std::ops::{ControlFlow, FromResidual, Try};
 use std::panic::Location;
+use std::process::Termination;
 use super::filename;
 
 #[macro_export]
@@ -15,6 +16,16 @@ macro_rules! fail {($($args: tt)+) => (return $crate::re::Re::fail (fomat! ($($a
 #[derive(Debug, PartialEq)]
 #[must_use = "this `Re` may be an `Err` variant, which should be handled"]
 pub enum Re<T> {Ok (T), Err (String)}
+
+impl<T> Termination for Re<T> {
+  fn report (self) -> i32 {
+    match self {
+      Re::Ok (_) => 0,
+      Re::Err (err) => {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        err.hash (&mut hasher);
+        1 + (hasher.finish() & 0xFFFFFF) as i32}}}}
 
 impl<T> Try for Re<T> {
   type Output = T;
@@ -101,14 +112,16 @@ impl<T> Re<T> {
       let bar: Option<String> = None;
       bar?;
       Re::Ok(())}
-    assert_eq! (foo(), Re::Err ("re:102] Option is None".into()))}
+    assert_eq! (foo(), Re::Err ("re:113] Option is None".into()));
+    assert_eq! (foo().report(), 7066472)}
 
   #[test] fn re2result() {
     fn foo() -> Result<(), String> {
       let bar: Re<()> = Re::fail ("ups");
       bar?;
       Result::Ok(())}
-    assert_eq! (foo(), Result::Err ("re:109] re:108] ups".into()))}
+    assert_eq! (foo(), Result::Err ("re:121] re:120] ups".into()));
+    assert_eq! (foo().report(), 1)}
 
   // cargo bench --features nightly,re
 

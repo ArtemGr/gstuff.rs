@@ -6,6 +6,7 @@
 
 #![cfg_attr(feature = "re", feature(try_trait_v2))]
 #![cfg_attr(feature = "re", feature(never_type))]
+#![cfg_attr(feature = "re", feature(termination_trait_lib))]
 
 #[allow(unused_imports)] #[macro_use] extern crate lazy_static;
 extern crate libc;
