@@ -1,9 +1,9 @@
 //! Utility functions and helpers specific to Windows
 
 use std::mem::{transmute, size_of, MaybeUninit};
-use std::os::raw::{c_int, c_void};
 use std::ptr;
 
+use winapi::ctypes::{c_int, c_void};
 use winapi::um::handleapi::INVALID_HANDLE_VALUE;
 use winapi::um::processenv::GetStdHandle;
 pub use winapi::shared::windef::{HDC, HWND};
