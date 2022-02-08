@@ -595,6 +595,7 @@ pub fn binprint (bin: &[u8], blank: u8) -> String {
 /// 
 /// NB: There is a similar abstraction at https://github.com/matklad/once_cell.
 /// (I've only just discovered it, some months after implementing the `Constructible` myself).
+#[deprecated(since="0.7.13", note="use once_cell")]
 pub struct Constructible<T> {
   /// A pinned `Box` pointer, or 0 if not initialized.
   value: AtomicUsize,
@@ -760,3 +761,22 @@ impl<T> Drop for Constructible<T> {
     if v == 0 {return}
     if self.value.compare_exchange (v, 0, Ordering::Relaxed, Ordering::Relaxed) .is_err() {return}
     unsafe {Box::from_raw (v as *mut T)};}}
+
+/// Row-major bits, 2x3, to [Bedstead](https://i.imgur.com/f3myFgM.png)
+/// 
+/// cf. https://youtu.be/5yoWxctJsYo graphics with teletext; Windows font rendering glitch
+pub fn bits2bedstead (ch: u32) -> char {
+  let ch =
+    if 0b111111 < ch {0xEE00}
+    else if 32 <= ch {0xEE40 + ch - 32}
+    else if 0 < ch {0xEE00 + ch}
+    else {0xEE00 + ch};
+  unsafe {char::from_u32_unchecked (ch)}}
+
+/// [Bedstead](https://i.imgur.com/f3myFgM.png) to row-major bits, 2x3
+pub fn bedstead2bits (ch: char) -> u32 {
+  let ch = ch as u32;
+  if 0xEE5F < ch {0}  // Past G1
+  else if 0xEE40 <= ch {ch - 0xEE40 + 32}
+  else if 0xEE00 <= ch {ch - 0xEE00}
+  else {0}}  // Below G1
