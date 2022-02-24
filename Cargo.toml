@@ -1,6 +1,6 @@
 [package]
 name = "gstuff"
-version = "0.7.14"
+version = "0.7.15"
 edition = "2021"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
@@ -23,7 +23,7 @@ rdtsc = []
 re = ["fomat-macros"]
 
 [dependencies]
-crossterm = {version = "0.22", optional = true}
+crossterm = {version = "0.23", optional = true}
 fomat-macros = {version = "0.3", optional = true}
 lazy_static = "1"
 libc = "0.2"
