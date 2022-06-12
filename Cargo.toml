@@ -1,6 +1,6 @@
 [package]
 name = "gstuff"
-version = "0.7.15"
+version = "0.8.0"
 edition = "2021"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
@@ -30,4 +30,3 @@ libc = "0.2"
 num-bigint = {version = "0.4", optional = true}
 num-traits = {version = "0.2", optional = true}
 smallvec = {version = "1.8", optional = true, features = ["const_generics", "union", "write"]}
-winapi = {version = "0.3", optional = true, features = ["wingdi", "wincon", "winuser"]}

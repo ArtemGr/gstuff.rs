@@ -1,28 +1,28 @@
 #![allow(unknown_lints, uncommon_codepoints)]
-
-#![cfg_attr(feature = "nightly", feature(asm))]
+#![allow(unused_imports)]
 
 #![cfg_attr(feature = "nightly", feature(test))]
 
 #![cfg_attr(feature = "re", feature(try_trait_v2))]
 #![cfg_attr(feature = "re", feature(never_type))]
-#![cfg_attr(feature = "re", feature(termination_trait_lib))]
 
-#[allow(unused_imports)] #[macro_use] extern crate lazy_static;
+
+#[macro_use] extern crate lazy_static;
 extern crate libc;
 #[cfg(feature = "crossterm")] extern crate crossterm;
 
-use std::any::Any;
+//use std::fmt;
+//use std::marker::PhantomData;
+use core::any::Any;
+use core::arch::asm;
+use core::str::{from_utf8_unchecked}; //, FromStr};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use std::fs;
-use std::fmt;
 use std::io::{self, Read};
-use std::marker::PhantomData;
-#[allow(unused_imports)] use std::os::raw::c_int;
+use std::os::raw::c_int;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::str::{from_utf8_unchecked, FromStr};
-#[allow(unused_imports)] use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(test)] use std::thread::sleep;
 
@@ -106,8 +106,6 @@ pub fn filename<'a> (path: &'a str) -> &'a str {
 #[cfg(feature = "base62j")] pub mod base62j;
 
 #[cfg(all(feature = "base91", feature = "nightly"))] pub mod base91;
-
-#[cfg(feature = "winapi")] pub mod win;
 
 #[cfg(feature = "re")] pub mod re;
 
@@ -589,178 +587,6 @@ pub fn binprint (bin: &[u8], blank: u8) -> String {
   let mut bin: Vec<u8> = bin.into();
   for ch in bin.iter_mut() {if *ch < 0x20 || *ch >= 0x7F {*ch = blank}}
   unsafe {String::from_utf8_unchecked (bin)}}
-
-/// A cell that can be initialized, but only once.  
-/// Once initialized the cell remains immutable, allowing us to alias the value.  
-/// 
-/// NB: There is a similar abstraction at https://github.com/matklad/once_cell.
-/// (I've only just discovered it, some months after implementing the `Constructible` myself).
-#[deprecated(since="0.7.13", note="use once_cell")]
-pub struct Constructible<T> {
-  /// A pinned `Box` pointer, or 0 if not initialized.
-  value: AtomicUsize,
-  _phantom: std::marker::PhantomData<T>}
-
-/// Creates a cell without a value.  
-/// Use `pin` or `initialize` to provide the value later.
-impl<T> Default for Constructible<T> {
-  fn default() -> Constructible<T> {Constructible {
-    value: AtomicUsize::new (0),
-    _phantom: PhantomData}}}
-
-/// Pre-initialize the cell with the given value.
-impl<T> From<T> for Constructible<T> {
-  fn from (v: T) -> Constructible<T> {
-    let v = Box::new (v);
-    let v = Box::into_raw (v);
-    Constructible {
-      value: AtomicUsize::new (v as usize),
-      _phantom: PhantomData}}}
-
-/// Translate an `Option` into a `Constructible` cell.  
-/// If the `Option` has a value then the cell with be initialized with it.  
-/// If the `Option` is empty then the cell will be empty as well, and waiting for delayed initialization.
-impl<T> From<Option<T>> for Constructible<T> {
-  fn from (v: Option<T>) -> Constructible<T> {
-    match v {
-      Some (v) => Constructible::from (v),
-      None => Constructible::default()}}}
-
-/// Allows to `parse` directly into the cell.
-impl<T, E> FromStr for Constructible<T> where T: FromStr<Err=E> {
-  type Err = E;
-  fn from_str (s: &str) -> Result<Self, Self::Err> {
-    let v: T = s.parse()?;
-    Ok (Self::from (v))}}
-
-#[test] fn test_parse() {
-  use std::num::ParseIntError;
-
-  let rc: Result<Constructible<u32>, ParseIntError> = "-1".parse();
-  assert! (rc.is_err());
-
-  let c: Constructible<i32> = "123".parse().unwrap();
-  assert_eq! (c.copy_or (0), 123);}
-
-impl<T> Constructible<T> {
-  /// Creates a cell without a value.  
-  /// Use `pin` or `initialize` to provide the value later.  
-  /// Being a `const` function it can be used with static fields.
-  #[cfg(feature = "nightly")]
-  pub const fn new() -> Constructible<T> {
-    Constructible {
-      value: AtomicUsize::new (0),
-      _phantom: PhantomData}}
-
-  /// Provides the cell with the value.  
-  /// The value is effectively pinned in the cell, it won't be moved.  
-  /// Returns an error if the cell is already initialized.
-  pub fn initialize<'a> (&'a self, v: Box<T>) -> Result<&'a T, String> {
-    let v = Box::into_raw (v);
-    if let Err (_) = self.value.compare_exchange (0, v as usize, Ordering::Relaxed, Ordering::Relaxed) {
-      unsafe {Box::from_raw (v)};
-      return ERR! ("Cell already initialized")}
-    Ok (unsafe {&*v})}
-
-  /// Provides the cell with the value.  
-  /// The value is moved into a `Box` and pinned there.  
-  /// Returns an error if the cell is already initialized.
-  pub fn pin<'a> (&'a self, v: T) -> Result<&'a T, String> {self.initialize (Box::new (v))}
-
-  /// Get a reference to the value.  
-  /// If the value is not (yet) available then returns the reference provided by `default`.
-  pub fn or<'a, F> (&'a self, default: &'a F) -> &'a T where F: Fn() -> &'a T, T: 'a {
-    let v = self.value.load (Ordering::Relaxed);
-    if v != 0 {
-      let v = v as *const T;
-      unsafe {&*v}
-    } else {
-      default()}}
-
-  /// Returns a copy of the value or the `default` if the value is not yet available.
-  pub fn copy_or (&self, default: T) -> T where T: Copy {
-    let v = self.value.load (Ordering::Relaxed);
-    if v != 0 {
-      let v = v as *const T;
-      unsafe {*v}
-    } else {
-      default}}
-
-  /// Returns a clone of the value or the `default` if the value is not yet available.
-  pub fn clone_or (&self, default: T) -> T where T: Clone {
-    let v = self.value.load (Ordering::Relaxed);
-    if v != 0 {
-      let v = v as *const T;
-      unsafe {(*v).clone()}
-    } else {
-      default}}
-
-  /// Returns a reference to the value or the given `error` if the value is not yet available.
-  pub fn ok_or<'a, E> (&'a self, error: E) -> Result<&'a T, E> {
-    let v = self.value.load (Ordering::Relaxed);
-    if v != 0 {
-      let v = v as *const T;
-      Ok (unsafe {&*v})
-    } else {
-      Err (error)}}
-
-  /// Returns a reference to the value or `None` if the value is not yet available.
-  pub fn as_option<'a> (&'a self) -> Option<&'a T> {
-    let v = self.value.load (Ordering::Relaxed);
-    if v != 0 {
-      let v = v as *const T;
-      Some (unsafe {&*v})
-    } else {
-      None}}
-
-  /// True if the value is not yet available.
-  pub fn is_none (&self) -> bool {
-    self.value.load (Ordering::Relaxed) == 0}
-
-  /// True if the cell is now initialized with a value.
-  pub fn is_some (&self) -> bool {
-    self.value.load (Ordering::Relaxed) != 0}
-
-  /// Returns a reference to the value unless it was not yet initialized.
-  pub fn iter<'a> (&'a self) -> std::option::IntoIter<&'a T> {
-    self.as_option().into_iter()}}
-
-#[cfg(feature = "nightly")]
-#[test] fn test_const() {
-  static V: Constructible<i32> = Constructible::new();
-  assert_eq! (V.copy_or (-1), -1);
-  V.pin (11) .unwrap();
-  assert_eq! (V.copy_or (-1), 11);
-  assert! (V.pin (22) .is_err());
-  assert_eq! (V.copy_or (-1), 11)}
-
-/// Makes it possible to access the value with a `for` loop.
-/// 
-///     for value in &constructible {println! ("{}", value)}
-impl<'a, T> IntoIterator for &'a Constructible<T> {
-  type Item = &'a T;
-  type IntoIter = std::option::IntoIter<&'a T>;
-  fn into_iter (self) -> Self::IntoIter {
-    self.as_option().into_iter()}}
-
-/// Debug formatting similar to `Option<&T>`.
-impl<T> fmt::Debug for Constructible<T> where T: fmt::Debug {
-  fn fmt (&self, ft: &mut fmt::Formatter) -> fmt::Result {
-    write! (ft, "{:?}", self.as_option())}}
-
-/// Prints the value or "-" if it is not yet available.
-impl<T> fmt::Display for Constructible<T> where T: fmt::Display {
-  fn fmt (&self, ft: &mut fmt::Formatter) -> fmt::Result {
-    match self.as_option() {
-      Some (v) => write! (ft, "{}", v),
-      None => write! (ft, "-")}}}
-
-impl<T> Drop for Constructible<T> {
-  fn drop (&mut self) {
-    let v = self.value.load (Ordering::Relaxed);
-    if v == 0 {return}
-    if self.value.compare_exchange (v, 0, Ordering::Relaxed, Ordering::Relaxed) .is_err() {return}
-    unsafe {Box::from_raw (v as *mut T)};}}
 
 /// Row-major bits, 2x3, to [Bedstead](https://i.imgur.com/f3myFgM.png)
 /// 

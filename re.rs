@@ -7,7 +7,7 @@ use fomat_macros::fomat;
 use std::fmt;
 use std::ops::{ControlFlow, FromResidual, Try};
 use std::panic::Location;
-use std::process::Termination;
+use std::process::{ExitCode, Termination};
 use super::filename;
 
 #[macro_export]
@@ -18,15 +18,15 @@ macro_rules! fail {($($args: tt)+) => (return $crate::re::Re::fail (fomat! ($($a
 pub enum Re<T> {Ok (T), Err (String)}
 
 impl<T> Termination for Re<T> {
-  fn report (self) -> i32 {
+  fn report (self) -> ExitCode {
     match self {
-      Re::Ok (_) => 0,
+      Re::Ok (_) => ExitCode::SUCCESS,
       Re::Err (err) => {
         eprintln! ("{}", err);
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         err.hash (&mut hasher);
-        1 + (hasher.finish() & 0xFFFFFF) as i32}}}}
+        ExitCode::from (1 | (hasher.finish() & 0xFF) as u8)}}}}
 
 impl<T> Try for Re<T> {
   type Output = T;
@@ -114,15 +114,18 @@ impl<T> Re<T> {
       bar?;
       Re::Ok(())}
     assert_eq! (foo(), Re::Err ("re:114] Option is None".into()));
-    assert_eq! (foo().report(), 521090)}
+    //assert_eq! (foo().report(), 521090)
+  }
 
   #[test] fn re2result() {
     fn foo() -> Result<(), String> {
       let bar: Re<()> = Re::fail ("ups");
       bar?;
       Result::Ok(())}
-    assert_eq! (foo(), Result::Err ("re:122] re:121] ups".into()));
-    assert_eq! (foo().report(), 1)}
+    assert_eq! (foo(), Result::Err ("re:123] re:122] ups".into()));
+    // #![feature(process_exitcode_internals)]
+    //assert_eq! (foo().report().to_i32(), 1)
+  }
 
   // cargo bench --features nightly,re
 
