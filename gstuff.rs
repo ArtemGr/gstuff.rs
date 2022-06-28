@@ -610,3 +610,18 @@ pub fn bedstead2bits (ch: char) -> u32 {
 pub fn round_to (decimals: u32, num: f32) -> f32 {
   let r = 10u32 .pow (decimals) as f32;
   (num * r) .round() / r}
+
+/// Allows to sort by float, but panics if there's a NaN or infinity
+#[derive(Debug, PartialOrd, PartialEq)]
+pub struct OrdFloat (pub f64);
+impl Eq for OrdFloat {}
+impl Ord for OrdFloat {
+  fn cmp (&self, other: &Self) -> std::cmp::Ordering {
+    self.0.partial_cmp (&other.0) .expect ("!partial_cmp")}}
+use std::hash::{Hash, Hasher};
+impl Hash for OrdFloat {
+  fn hash<H: Hasher> (&self, state: &mut H) {
+    self.0.to_bits().hash (state)}}
+impl std::fmt::Display for OrdFloat {
+  fn fmt (&self, fm: &mut std::fmt::Formatter) -> std::fmt::Result {
+    self.0.fmt (fm)}}
