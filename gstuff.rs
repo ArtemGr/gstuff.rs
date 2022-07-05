@@ -102,12 +102,20 @@ pub fn filename<'a> (path: &'a str) -> &'a str {
   ($format: expr, $($args: tt)+) => {Err (ERRL! ($format, $($args)+))};
   ($format: expr) => {Err (ERRL! ($format))}}
 
-#[cfg(feature = "base62")] pub mod base62;
-#[cfg(feature = "base62j")] pub mod base62j;
+#[cfg(feature = "base62")]
+pub mod base62;
 
-#[cfg(all(feature = "base91", feature = "nightly"))] pub mod base91;
+#[cfg(feature = "base62j")]
+pub mod base62j;
 
-#[cfg(feature = "re")] pub mod re;
+#[cfg(all(feature = "base91", feature = "nightly"))]
+pub mod base91;
+
+#[cfg(feature = "re")]
+pub mod re;
+
+#[cfg(feature = "lines")]
+pub mod lines;
 
 // --- status line -------
 

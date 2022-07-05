@@ -1,6 +1,6 @@
 [package]
 name = "gstuff"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2021"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
@@ -21,12 +21,16 @@ base62j = ["smallvec"]
 base91 = ["smallvec"]
 rdtsc = []
 re = ["fomat-macros"]
+lines = ["re", "winapi", "memmap2", "memchr"]
 
 [dependencies]
 crossterm = {version = "0.23", optional = true}
 fomat-macros = {version = "0.3", optional = true}
 lazy_static = "1"
 libc = "0.2"
+memchr = {version = "2", optional = true}
+memmap2 = {version = "0.5", optional = true}
 num-bigint = {version = "0.4", optional = true}
 num-traits = {version = "0.2", optional = true}
 smallvec = {version = "1.8", optional = true, features = ["const_generics", "union", "write"]}
+winapi = {version = "0.3", optional = true, features = ["errhandlingapi", "fileapi", "wingdi", "wincon", "winuser", "std"]}
