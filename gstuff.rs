@@ -615,6 +615,12 @@ pub fn bedstead2bits (ch: char) -> u32 {
   else if 0xEE00 <= ch {ch - 0xEE00}
   else {0}}  // Below G1
 
+#[test]
+fn test_bedstead() {
+  for bits in 0 ..= 0b111111 {
+    let ch = bits2bedstead (bits);
+    assert_eq! (bits, bedstead2bits (ch))}}
+
 pub fn round_to (decimals: u32, num: f32) -> f32 {
   let r = 10u32 .pow (decimals) as f32;
   (num * r) .round() / r}

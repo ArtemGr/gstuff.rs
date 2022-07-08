@@ -24,7 +24,7 @@ re = ["fomat-macros"]
 lines = ["re", "winapi", "memmap2", "memchr"]
 
 [dependencies]
-crossterm = {version = "0.23", optional = true}
+crossterm = {version = "0.24", optional = true}
 fomat-macros = {version = "0.3", optional = true}
 lazy_static = "1"
 libc = "0.2"
