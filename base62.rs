@@ -24,6 +24,7 @@ impl fmt::Display for U62 {
 
 /// NB: Incompatible (uses a different character order) with the JavaScript base62,
 /// https://github.com/base62/base62.js/blob/72a89c57c7c4da4552150467967b091da9f41f7f/lib/ascii.js#L3
+/// Should be compatible with https://en.wikipedia.org/wiki/Base62
 pub const BASE62ALPH: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 pub fn base62uenc<A: Array<Item=u8>> (mut ui: u64, sv: &mut SmallVec<A>) -> Result<(), String> {

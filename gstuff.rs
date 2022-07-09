@@ -464,7 +464,8 @@ impl<'a> FileLock<'a> {
     loop {
       if cycle > 1 {break Ok (None)}  // A second chance.
       cycle += 1;
-      match std::fs::OpenOptions::new().write (true) .create_new (true) .open (lock_path.as_ref()) {
+      let mut fo = std::fs::OpenOptions::new();
+      match fo.read (true) .write (true) .create_new (true) .open (lock_path.as_ref()) {
         Ok (file) => break Ok (Some (FileLock {lock_path, ttl_sec, file})),
         Err (ref ie) if ie.kind() == std::io::ErrorKind::AlreadyExists => {
           // See if the existing lock is old enough to be discarded.
@@ -502,7 +503,7 @@ impl<'a> std::fmt::Debug for FileLock<'a> {
 pub struct ProcEn {
   pub name: String,
   pub path: std::path::PathBuf,
-  /// NB: cmdline is NUL-separated.
+  /// NB: cmdline is NUL-separated (meaning there will be an empty string at the end)
   pub cmdline: Vec<String>}
 impl ProcEn {
   pub fn pid (&self) -> Option<u32> {
