@@ -112,6 +112,7 @@ impl Drop for Lock {
   fn drop (&mut self) {
     unsafe {
       let rc = libc::flock (self.fd, libc::LOCK_UN);
+      //println! ("lines] Lock::drop] {:?}; LOCK_UN rc = {}", std::thread::current().id(), rc);
       if rc == -1 {let _errno = *libc::__errno_location();}}}}
 
 /// try to lock the file, nonblocking

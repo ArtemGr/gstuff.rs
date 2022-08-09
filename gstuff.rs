@@ -6,7 +6,6 @@
 #![cfg_attr(feature = "re", feature(try_trait_v2))]
 #![cfg_attr(feature = "re", feature(never_type))]
 
-
 #[macro_use] extern crate lazy_static;
 extern crate libc;
 #[cfg(feature = "crossterm")] extern crate crossterm;
@@ -248,6 +247,43 @@ pub fn with_status_line (code: &dyn Fn()) {
 #[test] fn test_status_line() {
   with_status_line (&|| println! ("hello world"));}
 
+#[cfg(feature = "crossterm")]
+pub fn short_log_time (ms: u64)
+-> chrono::format::DelayedFormat<chrono::format::strftime::StrftimeItems<'static>> {
+  use chrono::TimeZone;
+  let time = chrono::Local.timestamp_millis (ms as i64);
+  time.format ("%d %H:%M:%S")}
+
+#[cfg(all(feature = "crossterm", feature = "chrono", feature = "fomat-macros"))]
+#[macro_export] macro_rules! log {
+  (q $command: expr, $($args: tt)+) => {{
+    $crate::with_status_line (&|| {
+      use fomat_macros::{wite, fomat};
+      let mut stdout = std::io::stdout();
+      let _ = stdout.queue ($command);
+      let _ = wite! (&mut stdout,
+        ($crate::short_log_time ($crate::now_ms())) ' '
+        ($crate::filename (file!())) ':' (line!()) "] "
+        $($args)+ '\n');
+      let _ = stdout.queue (crossterm::style::ResetColor);
+      let _ = stdout.flush();})}};
+  (c $color: expr, $($args: tt)+) => {
+    log! (q crossterm::style::SetForegroundColor ($color), $($args)+)};
+  (a $ansi: expr, $($args: tt)+) => {
+    log! (q crossterm::style::SetForegroundColor (
+      crossterm::style::Color::AnsiValue ($ansi)), $($args)+)};
+  ($($args: tt)+) => {{
+    $crate::with_status_line (&|| {
+      use fomat_macros::{pintln, fomat};
+      pintln! (
+        ($crate::short_log_time ($crate::now_ms())) ' '
+        ($crate::filename (file!())) ':' (line!()) "] "
+        $($args)+);})}};}
+
+#[cfg(all(feature = "crossterm", feature = "chrono", feature = "fomat-macros"))]
+#[test] fn test_log() {
+  log! ([= 2 + 2])}
+
 /// A helper to build a string on the stack.
 ///
 /// Given an array it makes a writeable cursor available to the passed code block.
@@ -271,6 +307,13 @@ pub fn with_status_line (code: &dyn Fn()) {
     $code;
     $array.position() as usize};
   unsafe {::std::str::from_utf8_unchecked (&$array[0..end])}}}}
+
+#[cfg(feature = "fomat-macros")]
+#[macro_export] macro_rules! ifomat {
+  ($($args: tt)+) => ({
+    let mut is = InlinableString::new();
+    wite! (&mut is, $($args)+) .expect ("!wite");
+    is})}
 
 /// Takes a netstring from the front of the slice.
 ///
@@ -627,7 +670,7 @@ pub fn round_to (decimals: u32, num: f32) -> f32 {
   (num * r) .round() / r}
 
 /// Allows to sort by float, but panics if there's a NaN or infinity
-#[derive(Debug, PartialOrd, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialOrd, PartialEq)]
 pub struct OrdFloat (pub f64);
 impl Eq for OrdFloat {}
 impl Ord for OrdFloat {
