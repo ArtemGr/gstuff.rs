@@ -308,6 +308,12 @@ pub fn short_log_time (ms: u64)
     $array.position() as usize};
   unsafe {::std::str::from_utf8_unchecked (&$array[0..end])}}}}
 
+/// Fomat into a small string.
+/// 
+/// Typical imports:
+/// 
+///     use inlinable_string::{InlinableString, StringExt};
+///     use std::fmt::{Write as FmtWrite};
 #[cfg(feature = "fomat-macros")]
 #[macro_export] macro_rules! ifomat {
   ($($args: tt)+) => ({
@@ -577,7 +583,13 @@ impl Iterator for ProcIt {
       None => return None,
       Some (Err (err)) => panic! ("ProcIt] !read_dir: {}", err),
       Some (Ok (proc_en)) => {
-        let file_type = match proc_en.file_type() {Ok (ft) => ft, Err (err) => panic! ("!file_type: {}", err)};
+        let file_type = match proc_en.file_type() {
+          Ok (ft) => ft,
+          Err (err) => {
+            if matches! (err.kind(), io::ErrorKind::NotFound) {
+              return self.next()
+            } else {
+              panic! ("!file_type ({:?}): {}", proc_en.path(), err)}}};
         if !file_type.is_dir() {return self.next()}
         let name = proc_en.file_name();
         let name = match name.to_str() {Some (name) => name, None => panic! ("ProcIt] !to_str")};

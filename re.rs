@@ -13,6 +13,11 @@ use super::filename;
 #[macro_export]
 macro_rules! fail {($($args: tt)+) => (return $crate::re::Re::fail (fomat! ($($args)+)))}
 
+/// fail with a small message
+#[cfg(feature = "fomat-macros")]
+#[macro_export] macro_rules! ifail {
+  ($($args: tt)+) => (return Re::fail (ifomat! ($($args)+)))}
+
 #[derive(Debug, PartialEq)]
 #[must_use = "this `Re` may be an `Err` variant, which should be handled"]
 pub enum Re<T> {Ok (T), Err (String)}
@@ -113,7 +118,7 @@ impl<T> Re<T> {
       let bar: Option<String> = None;
       bar?;
       Re::Ok(())}
-    assert_eq! (foo(), Re::Err ("re:114] Option is None".into()));
+    assert_eq! (foo(), Re::Err ("re:119] Option is None".into()));
     //assert_eq! (foo().report(), 521090)
   }
 
@@ -122,7 +127,7 @@ impl<T> Re<T> {
       let bar: Re<()> = Re::fail ("ups");
       bar?;
       Result::Ok(())}
-    assert_eq! (foo(), Result::Err ("re:123] re:122] ups".into()));
+    assert_eq! (foo(), Result::Err ("re:128] re:127] ups".into()));
     // #![feature(process_exitcode_internals)]
     //assert_eq! (foo().report().to_i32(), 1)
   }
