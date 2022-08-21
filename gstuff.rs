@@ -256,8 +256,10 @@ pub fn short_log_time (ms: u64)
 
 #[cfg(all(feature = "crossterm", feature = "chrono", feature = "fomat-macros"))]
 #[macro_export] macro_rules! log {
+
   (q $command: expr, $($args: tt)+) => {{
     $crate::with_status_line (&|| {
+      use crossterm::QueueableCommand;
       use fomat_macros::{wite, fomat};
       let mut stdout = std::io::stdout();
       let _ = stdout.queue ($command);
@@ -267,11 +269,17 @@ pub fn short_log_time (ms: u64)
         $($args)+ '\n');
       let _ = stdout.queue (crossterm::style::ResetColor);
       let _ = stdout.flush();})}};
+
+  // https://docs.rs/crossterm/latest/crossterm/style/enum.Color.html
   (c $color: expr, $($args: tt)+) => {
     log! (q crossterm::style::SetForegroundColor ($color), $($args)+)};
+
+  // https://en.wikipedia.org/wiki/ANSI_escape_code#8-bit
+  // https://www.ditig.com/256-colors-cheat-sheet
   (a $ansi: expr, $($args: tt)+) => {
     log! (q crossterm::style::SetForegroundColor (
       crossterm::style::Color::AnsiValue ($ansi)), $($args)+)};
+
   ($($args: tt)+) => {{
     $crate::with_status_line (&|| {
       use fomat_macros::{pintln, fomat};
