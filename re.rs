@@ -87,6 +87,10 @@ impl<T> Re<T> {
     Re::Err (err)}
 
   #[inline]
+  pub fn is_ok (self) -> bool {
+    match self {Re::Ok (_) => true, _ => false}}
+
+  #[inline]
   pub fn err (self) -> Option<String> {
     match self {Re::Ok (_) => None, Re::Err (e) => Some (e)}}
 
