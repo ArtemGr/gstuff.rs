@@ -20,7 +20,19 @@ pub struct LinesIt<'a> {
 
 impl<'a> LinesIt<'a> {
   pub fn new (lines: &'a [u8]) -> LinesIt<'a> {
-    LinesIt {lines, head: 0, tail: lines.len()}}
+    let (mut head, mut tail) = (0, lines.len());
+
+    loop {
+      if tail <= head {break}
+      if lines[head] == b'\n' {head += 1; continue}
+      break}
+
+    loop {
+      if tail <= head {break}
+      if lines[tail-1] == b'\n' {tail -= 1; continue}
+      break}
+
+    LinesIt {lines, head, tail}}
 
   /// seek to a line at the given byte `pos`ition
   pub fn heads_up (lines: &'a [u8], pos: usize) -> LinesIt<'a> {

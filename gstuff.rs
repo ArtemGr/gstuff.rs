@@ -261,6 +261,7 @@ pub fn short_log_time (ms: u64)
     $crate::with_status_line (&|| {
       use crossterm::QueueableCommand;
       use fomat_macros::{wite, fomat};
+      use std::io::Write;
       let mut stdout = std::io::stdout();
       let _ = stdout.queue ($command);
       let _ = wite! (&mut stdout,

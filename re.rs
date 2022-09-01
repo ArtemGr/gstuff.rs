@@ -122,7 +122,7 @@ impl<T> Re<T> {
       let bar: Option<String> = None;
       bar?;
       Re::Ok(())}
-    assert_eq! (foo(), Re::Err ("re:119] Option is None".into()));
+    assert_eq! (foo(), Re::Err ("re:123] Option is None".into()));
     //assert_eq! (foo().report(), 521090)
   }
 
@@ -131,7 +131,7 @@ impl<T> Re<T> {
       let bar: Re<()> = Re::fail ("ups");
       bar?;
       Result::Ok(())}
-    assert_eq! (foo(), Result::Err ("re:128] re:127] ups".into()));
+    assert_eq! (foo(), Result::Err ("re:132] re:131] ups".into()));
     // #![feature(process_exitcode_internals)]
     //assert_eq! (foo().report().to_i32(), 1)
   }
