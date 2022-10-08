@@ -199,6 +199,47 @@ impl LockAndLoad {
   pub fn heads_up (&self, pos: usize) -> LinesIt {
     LinesIt::heads_up (self.bulk(), pos)}}
 
+/// escape 1, 10 (lf), 13 (cr), 34 (double quote) and 44 (comma)
+/// 
+/// 0 is not escaped, as it it used a lot in the binary numbers
+pub fn csesc0<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
+  for ch in fr.iter() {
+    if *ch == 1 {push (1); push (1)}
+    else if *ch == 10 {push (1); push (3)}
+    else if *ch == 13 {push (1); push (4)}
+    else if *ch == 34 {push (1); push (5)}
+    else if *ch == 44 {push (1); push (6)}
+    else {push (*ch)}}}
+
+/// escape 1, 0, 10 (lf), 13 (cr), 34 (double quote) and 44 (comma)
+pub fn csesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
+  for ch in fr.iter() {
+    if *ch == 1 {push (1); push (1)}
+    else if *ch ==  0 {push (1); push (2)}
+    else if *ch == 10 {push (1); push (3)}
+    else if *ch == 13 {push (1); push (4)}
+    else if *ch == 34 {push (1); push (5)}
+    else if *ch == 44 {push (1); push (6)}
+    else {push (*ch)}}}
+
+pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
+  let len = fr.len();
+  let mut ix = 0;
+  loop {
+    if ix == len {break}
+    let code = fr[ix];
+    ix += 1;
+    if code == 1 && ix != len {
+      let esc = fr[ix];
+      ix += 1;
+      if esc == 1 {push (1)}
+      else if esc == 2 {push (0)}
+      else if esc == 3 {push (10)}
+      else if esc == 4 {push (13)}
+      else if esc == 5 {push (34)}
+      else if esc == 6 {push (44)}
+    } else {push (code)}}}
+
 #[cfg(all(test, feature = "nightly"))] mod test {
   extern crate test;
 
