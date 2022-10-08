@@ -5,6 +5,7 @@ use fomat_macros::{fomat, pintln};
 use memchr::{memchr, memrchr};
 use memmap2::{Mmap, MmapOptions, MmapMut};
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 use std::str::from_utf8_unchecked;
 
@@ -164,13 +165,17 @@ impl LockAndLoad {
   pub fn open (file: &dyn AsRef<Path>, ex: bool, header: &'static [u8]) -> Re<LockAndLoad> {
     let mut oop = fs::OpenOptions::new();
     oop.read (true);
-    if ex {oop.write (true);}
-    let file = oop.open (file.as_ref())?;
+    if ex {oop.write (true) .create (true);}
+    let mut file = oop.open (file.as_ref())?;
 
     let lock = lock (&file, ex)?;
 
-    let mmap = unsafe {MmapOptions::new().map (&file)?};
-    if &mmap[..header.len()] != header {fail! ("unexpected header")}
+    let mut mmap = unsafe {MmapOptions::new().map (&file)?};
+    if !header.is_empty() {
+      if ex && mmap.is_empty() {
+        file.write_all (header)?;
+        mmap = unsafe {MmapOptions::new().map (&file)?}}
+      if &mmap[..header.len()] != header {fail! ("unexpected header")}}
 
     Re::Ok (LockAndLoad {header, lock, mmap, file})}
 

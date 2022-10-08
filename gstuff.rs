@@ -247,7 +247,7 @@ pub fn with_status_line (code: &dyn Fn()) {
 #[test] fn test_status_line() {
   with_status_line (&|| println! ("hello world"));}
 
-#[cfg(feature = "crossterm")]
+#[cfg(all(feature = "crossterm", feature = "chrono"))]
 pub fn short_log_time (ms: u64)
 -> chrono::format::DelayedFormat<chrono::format::strftime::StrftimeItems<'static>> {
   use chrono::TimeZone;
