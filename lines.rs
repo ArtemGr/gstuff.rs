@@ -162,11 +162,11 @@ pub struct LockAndLoad {
 
 impl LockAndLoad {
   /// lock and mmap the `file`, check if the `header` matches
-  pub fn open (file: &dyn AsRef<Path>, ex: bool, header: &'static [u8]) -> Re<LockAndLoad> {
+  pub fn open (path: &dyn AsRef<Path>, ex: bool, header: &'static [u8]) -> Re<LockAndLoad> {
     let mut oop = fs::OpenOptions::new();
     oop.read (true);
     if ex {oop.write (true) .create (true);}
-    let mut file = oop.open (file.as_ref())?;
+    let mut file = oop.open (path.as_ref())?;
 
     let lock = lock (&file, ex)?;
 
@@ -175,7 +175,8 @@ impl LockAndLoad {
       if ex && mmap.is_empty() {
         file.write_all (header)?;
         mmap = unsafe {MmapOptions::new().map (&file)?}}
-      if &mmap[..header.len()] != header {fail! ("unexpected header")}}
+      if mmap.len() < header.len() || &mmap[..header.len()] != header {
+        fail! ([path.as_ref()] ": unexpected header")}}
 
     Re::Ok (LockAndLoad {header, lock, mmap, file})}
 
@@ -208,24 +209,24 @@ impl LockAndLoad {
 /// 
 /// 0 is not escaped, as it it used a lot in the binary numbers
 pub fn csesc0<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
-  for ch in fr.iter() {
-    if *ch == 1 {push (1); push (1)}
-    else if *ch == 10 {push (1); push (3)}
-    else if *ch == 13 {push (1); push (4)}
-    else if *ch == 34 {push (1); push (5)}
-    else if *ch == 44 {push (1); push (6)}
-    else {push (*ch)}}}
+  for &ch in fr.iter() {
+    if ch == 1 {push (1); push (1)}
+    else if ch == 10 {push (1); push (3)}
+    else if ch == 13 {push (1); push (4)}
+    else if ch == 34 {push (1); push (5)}
+    else if ch == 44 {push (1); push (6)}
+    else {push (ch)}}}
 
 /// escape 1, 0, 10 (lf), 13 (cr), 34 (double quote) and 44 (comma)
 pub fn csesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
-  for ch in fr.iter() {
-    if *ch == 1 {push (1); push (1)}
-    else if *ch ==  0 {push (1); push (2)}
-    else if *ch == 10 {push (1); push (3)}
-    else if *ch == 13 {push (1); push (4)}
-    else if *ch == 34 {push (1); push (5)}
-    else if *ch == 44 {push (1); push (6)}
-    else {push (*ch)}}}
+  for &ch in fr.iter() {
+    if ch == 1 {push (1); push (1)}
+    else if ch ==  0 {push (1); push (2)}
+    else if ch == 10 {push (1); push (3)}
+    else if ch == 13 {push (1); push (4)}
+    else if ch == 34 {push (1); push (5)}
+    else if ch == 44 {push (1); push (6)}
+    else {push (ch)}}}
 
 pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
   let len = fr.len();

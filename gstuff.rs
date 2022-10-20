@@ -6,7 +6,6 @@
 #![cfg_attr(feature = "re", feature(try_trait_v2))]
 #![cfg_attr(feature = "re", feature(never_type))]
 
-#[macro_use] extern crate lazy_static;
 extern crate libc;
 #[cfg(feature = "crossterm")] extern crate crossterm;
 
@@ -15,7 +14,7 @@ extern crate libc;
 use core::any::Any;
 use core::arch::asm;
 use core::str::{from_utf8_unchecked}; //, FromStr};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicI8, AtomicUsize, Ordering};
 use std::fs;
 use std::io::{self, Read};
 use std::os::raw::c_int;
@@ -125,11 +124,27 @@ fn isatty (fd: c_int) -> c_int {unsafe {libc::isatty (fd)}}
 fn isatty (_fd: c_int) -> c_int {0}
 
 #[cfg(feature = "crossterm")]
-lazy_static! {
-  static ref STATUS_LINE: Mutex<String> = Mutex::new (String::new());
-  /// True if the standard output is a terminal.
-  pub static ref ISATTY: bool = isatty (1) != 0;
-  pub static ref STATUS_LINE_LM: AtomicUsize = AtomicUsize::new (0);}
+static mut STATUS_LINE: Mutex<String> = Mutex::new (String::new());
+
+#[cfg(feature = "crossterm")]
+pub struct IsTty {pub is_tty: AtomicI8}
+#[cfg(feature = "crossterm")]
+impl core::ops::Deref for IsTty {
+  type Target = bool;
+  fn deref (&self) -> &Self::Target {
+    let mut is_tty = self.is_tty.load (Ordering::Relaxed);
+    if is_tty == 0 {
+      // https://man7.org/linux/man-pages/man3/isatty.3.html
+      is_tty = if isatty (1) != 0 {1} else {-1};
+      self.is_tty.store (is_tty, Ordering::Relaxed)}
+    if is_tty == 1 {&true} else {&false}}}
+
+/// `1` if standard output is a terminal, `0` if unknown
+#[cfg(feature = "crossterm")]
+pub static ISATTY: IsTty = IsTty {is_tty: AtomicI8::new (0)};
+
+#[cfg(feature = "crossterm")]
+pub static STATUS_LINE_LM: AtomicUsize = AtomicUsize::new (0);
 
 /// The time of the last status line update, in milliseconds.  
 /// Tracked in order to help the calling code with implementing debounce strategies
@@ -187,7 +202,7 @@ pub fn status_line (file: &str, line: u32, status: String) {
   use std::collections::hash_map::DefaultHasher;
   use std::hash::Hasher;
 
-    if let Ok (mut status_line) = STATUS_LINE.lock() {
+    if let Ok (mut status_line) = unsafe {STATUS_LINE.lock()} {
       let mut stdout = stdout();
       let old_hash = {let mut hasher = DefaultHasher::new(); hasher.write (status_line.as_bytes()); hasher.finish()};
       status_line.clear();
@@ -214,7 +229,7 @@ pub fn status_line (file: &str, line: u32, status: String) {
 pub fn status_line_clear() {
   use io::{stdout, Write};
 
-  if let Ok (mut status_line) = STATUS_LINE.lock() {
+  if let Ok (mut status_line) = unsafe {STATUS_LINE.lock()} {
     if *ISATTY && !status_line.is_empty() {
       let mut stdout = stdout();
         STATUS_LINE_LM.store (now_ms() as usize, Ordering::Relaxed);
@@ -230,7 +245,7 @@ pub fn with_status_line (code: &dyn Fn()) {
   use crossterm::{QueueableCommand, cursor};
   use io::{stdout, Write};
 
-  if let Ok (status_line) = STATUS_LINE.lock() {
+  if let Ok (status_line) = unsafe {STATUS_LINE.lock()} {
     if !*ISATTY || status_line.is_empty() {
       code()
     } else {
@@ -540,7 +555,7 @@ impl<'a> FileLock<'a> {
   /// Compile on Linux only as UTIME_NOW and futimens is absent on MacOS.
   #[cfg(target_os = "linux")]
   pub fn touch (&self) -> Result<(), String> {
-    // TODO: Consider using https://crates.io/crates/filetime as an optional dependency
+    //⌥ switch to https://doc.rust-lang.org/nightly/std/fs/struct.File.html#method.set_times
     let ts = libc::timespec {tv_sec: 0, tv_nsec: libc::UTIME_NOW};
     let times = [ts, ts];
     use std::os::unix::io::AsRawFd;
@@ -696,6 +711,7 @@ pub struct OrdFloat (pub f64);
 impl Eq for OrdFloat {}
 impl Ord for OrdFloat {
   fn cmp (&self, other: &Self) -> std::cmp::Ordering {
+    // cf. https://doc.rust-lang.org/nightly/std/primitive.f64.html#method.total_cmp
     self.0.partial_cmp (&other.0) .expect ("!partial_cmp")}}
 use std::hash::{Hash, Hasher};
 impl Hash for OrdFloat {
