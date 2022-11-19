@@ -265,9 +265,11 @@ pub fn with_status_line (code: &dyn Fn()) {
 #[cfg(all(feature = "crossterm", feature = "chrono"))]
 pub fn short_log_time (ms: u64)
 -> chrono::format::DelayedFormat<chrono::format::strftime::StrftimeItems<'static>> {
-  use chrono::TimeZone;
-  let time = chrono::Local.timestamp_millis (ms as i64);
-  time.format ("%d %H:%M:%S")}
+  use chrono::{Local, LocalResult, TimeZone};
+  if let Some (time) = Local.timestamp_millis_opt (ms as i64) .earliest() {
+    time.format ("%d %H:%M:%S")
+  } else {
+    Local::now().format ("00 00:00:00")}}
 
 #[cfg(all(feature = "crossterm", feature = "chrono", feature = "fomat-macros"))]
 #[macro_export] macro_rules! log {
@@ -350,7 +352,7 @@ pub fn short_log_time (ms: u64)
 /// Returns the unpacked netstring and the remainder of the slice.
 ///
 /// NB: Netstring encoding is not included as a separate function
-/// because it is as simple as `write! (&mut buf, "{}:{},", payload.len(), payload);`.
+/// because it is as simple as `wite! (&mut buf, (payload.len()) ':' (payload) ',')?;`.
 pub fn netstring (at: &[u8]) -> Result<(&[u8], &[u8]), String> {
   let length_end = match at.iter().position (|&ch| ch < b'0' || ch > b'9') {Some (l) if l > 0 => l, _ => return ERR! ("No len.")};
   match at.get (length_end) {Some (&ch) if ch == b':' => (), _ => return ERR! ("No colon.")};

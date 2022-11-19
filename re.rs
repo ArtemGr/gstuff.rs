@@ -13,6 +13,15 @@ use super::filename;
 #[macro_export]
 macro_rules! fail {($($args: tt)+) => (return $crate::re::Re::fail (fomat! ($($args)+)))}
 
+/// Ok or. Shorthand for mapping `Re::Err` with `match`.
+/// 
+///     let full = match fun() {Re::Ok (k) => k, Re::Err (err) => Default::default()};
+///     let short = oko! (fun(), err => {Default::default()});
+#[macro_export]
+macro_rules! oko {
+  ($e: expr, $err: ident => $er: block) => {
+    match $e {Re::Ok (k) => k, Re::Err ($err) => $er}}}
+
 /// fail with a small message
 #[cfg(feature = "fomat-macros")]
 #[macro_export] macro_rules! ifail {
