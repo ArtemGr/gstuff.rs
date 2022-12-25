@@ -115,6 +115,12 @@ pub mod re;
 #[cfg(feature = "lines")]
 pub mod lines;
 
+#[cfg(feature = "dht")]
+pub mod dht;
+
+#[cfg(feature = "dav")]
+pub mod dav;
+
 // --- status line -------
 
 #[cfg(all(feature = "crossterm", not(target_arch = "wasm32")))]
@@ -318,8 +324,9 @@ pub fn short_log_time (ms: u64)
 ///
 /// Example:
 ///
+///     use core::mem::MaybeUninit;
 ///     use std::io::Write;
-///     let mut foobar: [u8; 128] = unsafe {std::mem::uninitialized()};
+///     let mut foobar: [u8; 128] = unsafe {MaybeUninit::uninit().assume_init()};
 ///     let foobar = gstring! (foobar, {
 ///         write! (foobar, "foo") .expect ("!write");
 ///         write! (foobar, "bar") .expect ("!write");
@@ -346,6 +353,16 @@ pub fn short_log_time (ms: u64)
     let mut is = InlinableString::new();
     wite! (&mut is, $($args)+) .expect ("!wite");
     is})}
+
+//⌥ implement fast `Local` to ISO 8601 shorthand and back to `Local` helpers
+
+/// Extend ISO 8601 shorthand into full RFC 3339 timestamp.  
+/// “2022-12-12T12” → “2022-12-12T12:00:00Z”
+#[cfg(feature = "fomat-macros")]
+#[macro_export] macro_rules! iso8601z {
+  ($date_or_time: expr) => {{
+    let sufff = ($date_or_time.len() as i32 - 10) .max (0) as usize;
+    ifomat! (($date_or_time) (&"T00:00:00Z"[sufff..]))}}}
 
 /// Takes a netstring from the front of the slice.
 ///
