@@ -326,7 +326,7 @@ pub fn short_log_time (ms: u64)
 ///
 ///     use core::mem::MaybeUninit;
 ///     use std::io::Write;
-///     let mut foobar: [u8; 128] = unsafe {MaybeUninit::uninit().assume_init()};
+///     #[allow(invalid_value)] let mut foobar: [u8; 128] = unsafe {MaybeUninit::uninit().assume_init()};
 ///     let foobar = gstring! (foobar, {
 ///         write! (foobar, "foo") .expect ("!write");
 ///         write! (foobar, "bar") .expect ("!write");
@@ -350,6 +350,8 @@ pub fn short_log_time (ms: u64)
 #[cfg(feature = "fomat-macros")]
 #[macro_export] macro_rules! ifomat {
   ($($args: tt)+) => ({
+    use inlinable_string::{InlinableString, StringExt};
+    use std::fmt::Write as FmtWrite;
     let mut is = InlinableString::new();
     wite! (&mut is, $($args)+) .expect ("!wite");
     is})}
@@ -363,6 +365,11 @@ pub fn short_log_time (ms: u64)
   ($date_or_time: expr) => {{
     let sufff = ($date_or_time.len() as i32 - 10) .max (0) as usize;
     ifomat! (($date_or_time) (&"T00:00:00Z"[sufff..]))}}}
+
+/// ISO 8601 shorthand “2022-12-12T12” parsed as a Local
+#[cfg(feature = "fomat-macros")]
+#[macro_export] macro_rules! iso8601toL {($short: expr) => {
+  Local.from_local_datetime (&(DateTime::parse_from_rfc3339 (&iso8601z! ($short))?) .naive_utc()) .earliest()?}}
 
 /// Takes a netstring from the front of the slice.
 ///
