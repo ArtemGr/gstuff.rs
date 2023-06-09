@@ -205,9 +205,23 @@ impl LockAndLoad {
   pub fn heads_up (&self, pos: usize) -> LinesIt {
     LinesIt::heads_up (self.bulk(), pos)}}
 
+/// escape 1, 9 (tab), 10 (lf), 13 (cr), 34 (double quote)
+/// 
+/// 0 is not escaped, as it it used in binary numbers a lot.
+/// 
+/// NB: Some CSV viewers have a problem recognizing that the tab is used as the separator.
+pub fn csesct<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
+  for &ch in fr.iter() {
+    if ch == 1 {push (1); push (1)}
+    else if ch == 9 {push (1); push (7)}
+    else if ch == 10 {push (1); push (3)}
+    else if ch == 13 {push (1); push (4)}
+    else if ch == 34 {push (1); push (5)}
+    else {push (ch)}}}
+
 /// escape 1, 10 (lf), 13 (cr), 34 (double quote) and 44 (comma)
 /// 
-/// 0 is not escaped, as it it used a lot in the binary numbers
+/// 0 is not escaped, as it it used a lot in binary numbers.
 pub fn csesc0<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
   for &ch in fr.iter() {
     if ch == 1 {push (1); push (1)}
@@ -244,6 +258,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
       else if esc == 4 {push (13)}
       else if esc == 5 {push (34)}
       else if esc == 6 {push (44)}
+      else if esc == 7 {push (9)}
     } else {push (code)}}}
 
 #[cfg(all(test, feature = "nightly"))] mod test {
