@@ -339,7 +339,8 @@ pub fn short_log_time (ms: u64)
     let $array = &mut $array;
     $code;
     $array.position() as usize};
-  unsafe {::std::str::from_utf8_unchecked (&$array[0..end])}}}}
+  let s = unsafe {::core::str::from_utf8_unchecked (&$array[0..end])};
+  s}}}
 
 /// Fomat into a small string.
 /// 
