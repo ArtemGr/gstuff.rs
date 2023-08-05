@@ -467,6 +467,8 @@ pub fn any_to_str<'a> (message: &'a dyn Any) -> Option<&'a str> {
   return None}
 
 /// Converts the duration into a number of seconds with fractions.
+/// 
+/// (There's now a native `Duration::as_secs_f64`.)
 pub fn duration_to_float (duration: Duration) -> f64 {
   duration.as_secs() as f64 + ((duration.subsec_nanos() as f64) / 1000000000.0)}
 

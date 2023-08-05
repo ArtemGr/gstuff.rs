@@ -336,3 +336,211 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
       assert_eq! (line, expected);
       ix += 1;
       if it.lines.len() <= ix {ix = 0}})}}
+
+#[cfg(feature = "sqlite")] pub mod csq {
+  // cf. https://www.sqlite.org/vtab.html, https://sqlite.org/src/file?name=ext/misc/csv.c&ci=trunk
+
+  use core::ffi::c_int;
+  use core::marker::PhantomData;
+  use core::str::from_utf8;
+  use crate::lines::Re;
+  use crate::log;
+  use fomat_macros::{fomat, wite};
+  use rusqlite::{vtab, Connection, Error, Result};
+  use rusqlite::ffi::{sqlite3_vtab, sqlite3_vtab_cursor};
+  use rusqlite::types::Value;
+  use smallvec::SmallVec;
+  use std::fmt::Write;
+  use std::rc::Rc;
+  use super::{LockAndLoad, LinesIt};
+
+  #[repr(C)]
+  pub struct CsqVTab {
+    base: sqlite3_vtab,
+    ll: LockAndLoad}
+
+  #[repr(C)]
+  pub struct CsvVTabCursor<'vt> {
+    base: sqlite3_vtab_cursor,
+    it: LinesIt<'vt>,
+    cols: SmallVec<[&'vt [u8]; 8]>,
+    rowid: usize,
+    eof: bool,
+    phantom: PhantomData<&'vt CsqVTab>}
+
+  //impl CsvVTabCursor<'_> {
+  //  fn vtab (&self) -> &CsvVTab {unsafe {&*(self.base.pVtab as *const CsvVTab)}}}
+
+  unsafe impl vtab::VTabCursor for CsvVTabCursor<'_> {
+    fn filter (&mut self, _idx_num: c_int, _idx_str: Option<&str>, _args: &vtab::Values<'_>) -> Result<()> {
+      // “When initially opened, the cursor is in an undefined state.
+      // The SQLite core will invoke the xFilter method on the cursor
+      // prior to any attempt to position or read from the cursor.”
+      self.it.head = 0;
+      self.rowid = 0;
+      self.eof = false;
+      self.next()}
+
+    fn next (&mut self) -> Result<()> {
+      if 0 == self.rowid {  // skip header
+        if self.it.next().is_none() {self.eof = true}}
+      if let Some (row) = self.it.next() {
+        self.cols.clear();
+        for col in row.split (|ch| *ch == b',') {self.cols.push (col)}
+      } else {self.eof = true}
+      if self.eof {return Ok(())}
+      self.rowid += 1;
+      Ok(())}
+
+    fn eof (&self) -> bool {
+      self.eof}
+
+    fn column (&self, ctx: &mut vtab::Context, col: c_int) -> Result<()> {
+      if col < 0 || self.cols.len() as c_int <= col {return Err (Error::ModuleError (fomat! ("csq] " [=col])))}
+      let col = self.cols[col as usize];
+      if let Ok (ustr) = from_utf8 (col) {
+        ctx.set_result (&ustr)
+      } else {
+        ctx.set_result (&col)}}
+
+    fn rowid (&self) -> Result<i64> {
+      Ok (self.rowid as i64)}}
+
+  unsafe impl<'vtab> vtab::VTab<'vtab> for CsqVTab {
+    type Aux = ();
+    type Cursor = CsvVTabCursor<'vtab>;
+    fn connect (db: &mut vtab::VTabConnection, _aux: Option<&()>, args: &[&[u8]]) -> Result<(String, CsqVTab)> {
+      if args.len() < 4 {return Err (Error::ModuleError ("csq] !path".into()))}
+      let mut ll = None;
+      let argsʹ = &args[3..];
+      for c_slice in argsʹ {
+        let (param, value) = vtab::parameter (c_slice)?;
+        match param {
+          "path" => ll = Some (match LockAndLoad::rd (&value, b"") {Re::Ok (k) => k, Re::Err (err) => {
+            return Err (Error::ModuleError (fomat! ("csq] " (err))))}}),
+          _ => return Err (Error::ModuleError (fomat! ("csq] unrecognized " [=param])))}}
+      let Some (ll) = ll else {return Err (Error::ModuleError ("csq] !path".into()))};
+      let Some (hdr) = ll.lines().next() else {return Err (Error::ModuleError ("csq] !head".into()))};
+      let Ok (tname) = from_utf8 (&args[2]) else {return Err (Error::ModuleError ("csq] tname!utf8".into()))};
+      let tname = vtab::escape_double_quote (tname.trim());
+      let mut schema = String::with_capacity (123);
+      let _ = wite! (&mut schema, "CREATE TABLE \"" (tname) "\" (");
+      for (col, cn) in hdr.split (|ch| *ch == b',') .zip (0..) {
+        let Ok (col) = from_utf8 (col) else {return Err (Error::ModuleError ("csq] head!utf8".into()))};
+        let col = vtab::escape_double_quote (col);
+        let _ = wite! (&mut schema, if cn != 0 {", "} '"' (col) "\" TEXT NOT NULL");}
+      schema.push_str (");");
+      let vtab = CsqVTab {base: sqlite3_vtab::default(), ll};
+      // https://www.sqlite.org/c3ref/c_vtab_constraint_support.html
+      db.config (vtab::VTabConfig::DirectOnly)?;
+      Ok ((schema, vtab))}
+
+    /// https://www.sqlite.org/vtab.html#the_xbestindex_method
+    fn best_index (&self, info: &mut vtab::IndexInfo) -> Result<()> {
+      info.set_estimated_cost (1_000_000.);
+      Ok(())}
+
+    fn open (&mut self) -> Result<CsvVTabCursor<'_>> {
+      Ok (CsvVTabCursor {
+        base: sqlite3_vtab_cursor::default(),
+        it: self.ll.iter(),
+        cols: SmallVec::new(),
+        rowid: 0,
+        eof: false,
+        phantom: PhantomData})}}
+
+  impl vtab::CreateVTab<'_> for CsqVTab {
+    const KIND: vtab::VTabKind = vtab::VTabKind::Default;}
+
+  pub fn csq_load (db: &Connection) -> Re<()> {
+    db.create_module ("csq", vtab::read_only_module::<CsqVTab>(), None)?;
+    Re::Ok(())}
+
+  pub fn csq_poc (path: &str) -> Re<()> {
+    let db = Connection::open_in_memory()?;
+    db.create_module ("csq", vtab::read_only_module::<CsqVTab>(), None)?;
+    let sql = fomat! ("CREATE VIRTUAL TABLE vtab USING csq (path=" (path) ")");
+    db.execute_batch (&sql)?;
+    let schema = db.query_row ("SELECT sql FROM sqlite_schema WHERE name = 'vtab'", [], |row| row.get::<_, String> (0))?;
+    log! ("schema: " (schema));
+    let mut columns = 0;
+    for row in db.prepare ("SELECT * FROM pragma_table_info ('vtab')")? .query_map ([], |row| {
+      let cid = row.get::<_, i32> (0)?;
+      let name = row.get::<_, Rc<str>> (1)?;
+      let ty = row.get::<_, Rc<str>> (2)?;
+      let notnull = row.get::<_, bool> (3)?;
+      log! ("column " (cid) ": " [=name] ' ' [=ty] ' ' [=notnull]);
+      columns += 1;
+      Ok(())})? {row?}
+    let rows = db.query_row ("SELECT COUNT(*) FROM vtab", [], |row| row.get::<_, i32> (0))?;
+    log! ([=rows]);
+    for row in db.prepare ("SELECT rowid, * FROM vtab")? .query_map ([], |row| {
+      let rowid = row.get::<_, u32> (0)?;
+      for col in 0..columns {
+        let val = row.get::<_, Value> (1 + col)?;
+        log! ((rowid) ' ' [=val])}
+      Ok(())})? {row?}
+    Re::Ok(())}}
+
+#[cfg(all(test, feature = "nightly", feature = "sqlite"))] mod csq_test {
+  #[test] fn no_such_file() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    super::csq::csq_load (&db) .unwrap();
+    let rc = db.execute_batch ("CREATE VIRTUAL TABLE vt USING csq (path=/no/such/file)");
+    assert! (rc.is_err());
+    let err = format! ("{:?}", rc);
+    assert! (err.contains ("csq] lines:"));
+    assert! (err.contains ("(os error "))}}
+
+#[cfg(all(test, feature = "nightly", feature = "sqlite"))] mod csq_bench {
+  extern crate test;
+
+  use std::io::Write;
+  use std::rc::Rc;
+
+  fn gen (name: &str, num: i32) {
+    let mut file = std::io::BufWriter::new (std::fs::File::create (name) .unwrap());
+    for i in 0..num {writeln! (&mut file, "foo,bar,{}\n", i) .unwrap()}}
+
+  #[bench] fn csq_open (bm: &mut test::Bencher) {
+    gen ("foobar1.csv", 12345);
+    bm.iter (|| {
+      let db = rusqlite::Connection::open_in_memory().unwrap();
+      super::csq::csq_load (&db) .unwrap();
+      db.execute_batch ("CREATE VIRTUAL TABLE vt USING csq (path=foobar1.csv)") .unwrap()});
+    std::fs::remove_file ("foobar1.csv") .unwrap()}
+
+  #[bench] fn csq_select_one (bm: &mut test::Bencher) {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    super::csq::csq_load (&db) .unwrap();
+    gen ("foobar2.csv", 12345);
+    db.execute_batch ("CREATE VIRTUAL TABLE vt USING csq (path=foobar2.csv)") .unwrap();
+    let mut st = db.prepare ("SELECT * FROM vt LIMIT 1") .unwrap();
+    bm.iter (|| {
+      assert! (st.query_row ([], |row| Ok (row.get::<_, Rc<str>> (2) .unwrap().as_ref() == "1")) .unwrap())});
+    std::fs::remove_file ("foobar2.csv") .unwrap()}
+
+  #[bench] fn csq_next (bm: &mut test::Bencher) {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    super::csq::csq_load (&db) .unwrap();
+    gen ("foobar3.csv", 12345);
+    db.execute_batch ("CREATE VIRTUAL TABLE vt USING csq (path=foobar3.csv)") .unwrap();
+    let st = Box::into_raw (Box::new (db.prepare ("SELECT * FROM vt") .unwrap()));
+    let mut rows = Box::into_raw (Box::new (unsafe {(*st).query ([]) .unwrap()}));
+    let mut i = 1;
+    bm.iter (|| {
+      if i == 0 {
+        unsafe {drop (Box::from_raw (rows))};
+        rows = Box::into_raw (Box::new (unsafe {(*st).query ([]) .unwrap()}));
+        i += 1
+      } else if i < 12345 - 1 {
+        let row = unsafe {(*rows).next().unwrap().unwrap()};
+        let ri = row.get::<_, Rc<str>> (2) .unwrap();
+        println! ("{}", ri);
+        let ri: i32 = ri.parse().unwrap();
+        assert_eq! (ri, i);
+        i += 1
+      } else {
+        i = 0}});
+    unsafe {drop (Box::from_raw (st))};
+    std::fs::remove_file ("foobar3.csv") .unwrap()}}
