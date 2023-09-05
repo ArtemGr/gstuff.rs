@@ -115,12 +115,6 @@ pub mod re;
 #[cfg(feature = "lines")]
 pub mod lines;
 
-#[cfg(feature = "dht")]
-pub mod dht;
-
-#[cfg(feature = "dav")]
-pub mod dav;
-
 // --- status line -------
 
 #[cfg(all(feature = "crossterm", not(target_arch = "wasm32")))]
@@ -471,6 +465,11 @@ pub fn any_to_str<'a> (message: &'a dyn Any) -> Option<&'a str> {
 /// (There's now a native `Duration::as_secs_f64`.)
 pub fn duration_to_float (duration: Duration) -> f64 {
   duration.as_secs() as f64 + ((duration.subsec_nanos() as f64) / 1000000000.0)}
+
+/// Converts the time into a number of seconds with fractions.
+#[cfg(feature = "chrono")]
+pub fn dtl2float (dt: chrono::DateTime<chrono::Local>) -> f64 {
+  dt.timestamp() as f64 + ((dt.timestamp_subsec_nanos() as f64) / 1000000000.0)}
 
 /// Converts time in milliseconds into a number of seconds with fractions.
 pub fn ms2sec (ms: u64) -> f64 {

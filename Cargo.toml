@@ -1,6 +1,6 @@
 [package]
 name = "gstuff"
-version = "0.8.11"
+version = "0.8.12"
 edition = "2021"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
@@ -26,11 +26,11 @@ sqlite = ["lines", "re", "rusqlite", "smallvec", "crossterm", "chrono", "fomat-m
 
 [dependencies]
 chrono = {version = "0.4", optional = true}
-crossterm = {version = "0.26", optional = true}
+crossterm = {version = "0.27", optional = true}
 fomat-macros = {version = "0.3", optional = true}
 libc = "0.2"
 memchr = {version = "2", optional = true}
-memmap2 = {version = "0.6", optional = true}
+memmap2 = {version = "0.7", optional = true}
 num-bigint = {version = "0.4", optional = true}
 num-traits = {version = "0.2", optional = true}
 rusqlite = {version = "0.29", features = ["bundled", "functions", "vtab"], optional = true}
