@@ -544,3 +544,67 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
         i = 0}});
     unsafe {drop (Box::from_raw (st))};
     std::fs::remove_file ("foobar3.csv") .unwrap()}}
+
+pub fn crc16ccitt (mut crc: u16, ch: u16) -> u16 {
+  let mut v = 0x80u16;
+  for _ in 0u16..8 {
+    let xor_flag = (crc & 0x8000) != 0;
+    crc = crc << 1;
+    if (ch & v) != 0 {crc = crc + 1}
+    if xor_flag {crc = crc ^ 0x1021}
+    v = v >> 1}
+  crc}
+
+/// [CRC16-CCITT](https://srecord.sourceforge.net/crc16-ccitt.html),
+/// matches [CRC calculation](http://www.zorc.breitbandkatze.de/crc.html) with “Initial value: 1D0F”
+pub fn crc16ccitt_aug (mut crc: u16) -> u16 {
+  for _ in 0u16..16 {
+    let xor_flag = (crc & 0x8000) != 0;
+    crc = crc << 1;
+    if xor_flag {crc = crc ^ 0x1021}}
+  crc}
+
+pub fn crc16u8 (mut crc: u16, bytes: &[u8]) -> u16 {
+  let mut it = bytes.chunks_exact (2);
+  loop {match it.next() {
+    Some (pair) => {
+      crc = crc16ccitt (crc, ((pair[0] as u16) << 8) | (pair[1] as u16))},
+    None => {
+      let rem = it.remainder();
+      if !rem.is_empty() {crc = crc16ccitt (crc, rem[0] as u16)}
+      break crc}}}}
+
+#[cfg(all(test, feature = "nightly"))] mod crc_bench {
+  extern crate test;
+  use crate::lines::{crc16ccitt, crc16ccitt_aug, crc16u8};
+  use std::io::Write;
+  use std::rc::Rc;
+  use test::black_box;
+
+  #[bench] fn crc16 (bm: &mut test::Bencher) {
+    bm.iter (|| {
+      assert_eq! (0x1D0F, crc16ccitt_aug (black_box (0xFFFF)))})}
+
+  #[bench] fn crc16_a (bm: &mut test::Bencher) {
+    assert_eq! (0xE1B1, crc16ccitt (0xFFFF, black_box (b'A' as u16)));
+    bm.iter (|| {
+      let crc = crc16ccitt (0xFFFF, black_box (b'A' as u16));
+      assert_eq! (0x9479, crc16ccitt_aug (black_box (crc)))})}
+
+  #[bench] fn crc16_123456789 (bm: &mut test::Bencher) {
+    bm.iter (|| {
+      let mut crc = 0xFFFF;
+      for ch in b"123456789" {
+        crc = crc16ccitt (crc, black_box (*ch as u16))}
+      assert_eq! (0xE5CC, crc16ccitt_aug (black_box (crc)))})}
+
+  #[bench] fn crc16u8_123456789 (bm: &mut test::Bencher) {
+    bm.iter (|| {
+      let crc = crc16u8 (0xFFFF, black_box (&b"123456789"[..]));
+      assert_eq! (0x3F8, crc16ccitt_aug (black_box (crc)))})}
+
+  #[bench] fn c8_123456789 (bm: &mut test::Bencher) {
+    bm.iter (|| {
+      let c8 = b"123456789".iter().fold (0u8, |a, &b| black_box (a.wrapping_add (b)));
+      assert_eq! (0xDD, c8)})}}
+

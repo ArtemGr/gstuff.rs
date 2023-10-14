@@ -165,17 +165,12 @@ fn delete_line (stdout: &mut io::Stdout) {
   use crossterm::{terminal, QueueableCommand};
 
   let _ = stdout.queue (terminal::Clear (terminal::ClearType::UntilNewLine));}
-// ^^ Checking whether crossterm will do better than term
 
   // NB: term's `delete_line` is really screwed.
   // Sometimes it doesn't work. And when it does, it does it wrong.
   // Documentation says it "Deletes the text from the cursor location to the end of the line"
   // but when it works it clears the *entire* line instead.
-  // I should probably find something better than term, unless it's `delete_line` is fixed first.
-
-//  if cfg! (windows) {
-//  } else {
-//    let _ = stdout.write (b"\x1B[K");}}  // EL0. Clear right.
+  // let _ = stdout.write (b"\x1B[K");}}  // EL0. Clear right.
 
 /// Clears the line to the right, prints the given text, moves the caret all the way to the left.
 ///
@@ -746,5 +741,20 @@ impl Hash for OrdFloat {
   fn hash<H: Hasher> (&self, state: &mut H) {
     self.0.to_bits().hash (state)}}
 impl std::fmt::Display for OrdFloat {
+  fn fmt (&self, fm: &mut std::fmt::Formatter) -> std::fmt::Result {
+    self.0.fmt (fm)}}
+
+/// Allows to sort by float, but panics if there's a NaN or infinity
+#[derive(Clone, Copy, Debug, PartialOrd, PartialEq)]
+pub struct OrdF32 (pub f32);
+impl Eq for OrdF32 {}
+impl Ord for OrdF32 {
+  fn cmp (&self, other: &Self) -> std::cmp::Ordering {
+    // cf. https://doc.rust-lang.org/nightly/std/primitive.f64.html#method.total_cmp
+    self.0.partial_cmp (&other.0) .expect ("!partial_cmp")}}
+impl Hash for OrdF32 {
+  fn hash<H: Hasher> (&self, state: &mut H) {
+    self.0.to_bits().hash (state)}}
+impl std::fmt::Display for OrdF32 {
   fn fmt (&self, fm: &mut std::fmt::Formatter) -> std::fmt::Result {
     self.0.fmt (fm)}}
