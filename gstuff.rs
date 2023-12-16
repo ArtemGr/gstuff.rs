@@ -6,6 +6,8 @@
 #![cfg_attr(feature = "re", feature(try_trait_v2))]
 #![cfg_attr(feature = "re", feature(never_type))]
 
+#![cfg_attr(feature = "fast_rsync", feature(file_set_times))]
+
 extern crate libc;
 #[cfg(feature = "crossterm")] extern crate crossterm;
 
@@ -189,9 +191,9 @@ fn delete_line (stdout: &mut io::Stdout) {
 ///
 ///     use gstuff::{status_line, ISATTY};
 ///     macro_rules! status_line {($($args: tt)+) => {if *ISATTY {
-///       status_line (file!(), line!(), fomat! ($($args)+))}}}
+///       status_line (file!(), line!(), &fomat! ($($args)+))}}}
 #[cfg(all(feature = "crossterm"))]
-pub fn status_line (file: &str, line: u32, status: String) {
+pub fn status_line (file: &str, line: u32, status: &str) {
   use crossterm::{QueueableCommand, cursor};
   use io::{stdout, Write};
   use std::collections::hash_map::DefaultHasher;
@@ -221,16 +223,17 @@ pub fn status_line (file: &str, line: u32, status: String) {
 
 /// Clears the status line if stdout `isatty` and `status_line` isn't empty.
 #[cfg(feature = "crossterm")]
-pub fn status_line_clear() {
+pub fn status_line_clear() -> String {
   use io::{stdout, Write};
-
+  let mut ret = String::new();
   if let Ok (mut status_line) = unsafe {STATUS_LINE.lock()} {
     if *ISATTY && !status_line.is_empty() {
       let mut stdout = stdout();
         STATUS_LINE_LM.store (now_ms() as usize, Ordering::Relaxed);
-        status_line.clear();
+        core::mem::swap (&mut ret, &mut status_line);
         delete_line (&mut stdout);
-        let _ = stdout.flush();}}}
+        let _ = stdout.flush();}}
+  ret}
 
 /// Clear the status line, run the code, then restore the status line.
 ///

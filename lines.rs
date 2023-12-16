@@ -1,12 +1,16 @@
+#[cfg(unix)] use std::os::fd::RawFd;
+use core::cell::RefCell;
 use core::mem::MaybeUninit;
 use crate::fail;
 use crate::re::Re;
 use fomat_macros::{fomat, pintln};
 use memchr::{memchr, memrchr};
 use memmap2::{Mmap, MmapOptions, MmapMut};
+use std::ffi;
 use std::fs;
-use std::io::Write;
-use std::path::Path;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::ptr::null_mut;
 use std::str::from_utf8_unchecked;
 
 /// Grok long lines with `memchr`. Consider using
@@ -536,7 +540,6 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
       } else if i < 12345 - 1 {
         let row = unsafe {(*rows).next().unwrap().unwrap()};
         let ri = row.get::<_, Rc<str>> (2) .unwrap();
-        println! ("{}", ri);
         let ri: i32 = ri.parse().unwrap();
         assert_eq! (ri, i);
         i += 1
@@ -545,12 +548,12 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
     unsafe {drop (Box::from_raw (st))};
     std::fs::remove_file ("foobar3.csv") .unwrap()}}
 
-pub fn crc16ccitt (mut crc: u16, ch: u16) -> u16 {
+pub fn crc16ccitt (mut crc: u16, ch: u8) -> u16 {
   let mut v = 0x80u16;
   for _ in 0u16..8 {
     let xor_flag = (crc & 0x8000) != 0;
     crc = crc << 1;
-    if (ch & v) != 0 {crc = crc + 1}
+    if (ch as u16 & v) != 0 {crc = crc + 1}
     if xor_flag {crc = crc ^ 0x1021}
     v = v >> 1}
   crc}
@@ -564,19 +567,9 @@ pub fn crc16ccitt_aug (mut crc: u16) -> u16 {
     if xor_flag {crc = crc ^ 0x1021}}
   crc}
 
-pub fn crc16u8 (mut crc: u16, bytes: &[u8]) -> u16 {
-  let mut it = bytes.chunks_exact (2);
-  loop {match it.next() {
-    Some (pair) => {
-      crc = crc16ccitt (crc, ((pair[0] as u16) << 8) | (pair[1] as u16))},
-    None => {
-      let rem = it.remainder();
-      if !rem.is_empty() {crc = crc16ccitt (crc, rem[0] as u16)}
-      break crc}}}}
-
 #[cfg(all(test, feature = "nightly"))] mod crc_bench {
   extern crate test;
-  use crate::lines::{crc16ccitt, crc16ccitt_aug, crc16u8};
+  use crate::lines::{crc16ccitt, crc16ccitt_aug};
   use std::io::Write;
   use std::rc::Rc;
   use test::black_box;
@@ -586,22 +579,17 @@ pub fn crc16u8 (mut crc: u16, bytes: &[u8]) -> u16 {
       assert_eq! (0x1D0F, crc16ccitt_aug (black_box (0xFFFF)))})}
 
   #[bench] fn crc16_a (bm: &mut test::Bencher) {
-    assert_eq! (0xE1B1, crc16ccitt (0xFFFF, black_box (b'A' as u16)));
+    assert_eq! (0xE1B1, crc16ccitt (0xFFFF, black_box (b'A')));
     bm.iter (|| {
-      let crc = crc16ccitt (0xFFFF, black_box (b'A' as u16));
+      let crc = crc16ccitt (0xFFFF, black_box (b'A'));
       assert_eq! (0x9479, crc16ccitt_aug (black_box (crc)))})}
 
   #[bench] fn crc16_123456789 (bm: &mut test::Bencher) {
     bm.iter (|| {
       let mut crc = 0xFFFF;
       for ch in b"123456789" {
-        crc = crc16ccitt (crc, black_box (*ch as u16))}
+        crc = crc16ccitt (crc, black_box (*ch))}
       assert_eq! (0xE5CC, crc16ccitt_aug (black_box (crc)))})}
-
-  #[bench] fn crc16u8_123456789 (bm: &mut test::Bencher) {
-    bm.iter (|| {
-      let crc = crc16u8 (0xFFFF, black_box (&b"123456789"[..]));
-      assert_eq! (0x3F8, crc16ccitt_aug (black_box (crc)))})}
 
   #[bench] fn c8_123456789 (bm: &mut test::Bencher) {
     bm.iter (|| {

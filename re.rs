@@ -22,11 +22,6 @@ macro_rules! oko {
   ($e: expr, $err: ident => $er: block) => {
     match $e {Re::Ok (k) => k, Re::Err ($err) => $er}}}
 
-/// fail with a small message
-#[cfg(feature = "fomat-macros")]
-#[macro_export] macro_rules! ifail {
-  ($($args: tt)+) => (return Re::fail (ifomat! ($($args)+)))}
-
 #[derive(Debug, PartialEq)]
 #[must_use = "this `Re` may be an `Err` variant, which should be handled"]
 pub enum Re<T> {Ok (T), Err (String)}
