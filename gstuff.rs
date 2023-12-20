@@ -272,6 +272,11 @@ pub fn short_log_time (ms: u64)
 #[cfg(all(feature = "crossterm", feature = "chrono", feature = "fomat-macros"))]
 #[macro_export] macro_rules! log {
 
+  (0, $($args: tt)+) => {  // (temporarily) disable
+    if 1 == 0 {log! ($($args)+)}};
+  (1, $($args: tt)+) => {  // proceed as usual
+    {log! ($($args)+)}};
+
   (q $command: expr, $($args: tt)+) => {{
     $crate::with_status_line (&|| {
       use crossterm::QueueableCommand;
