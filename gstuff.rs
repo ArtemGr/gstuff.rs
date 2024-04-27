@@ -6,8 +6,6 @@
 #![cfg_attr(feature = "re", feature(try_trait_v2))]
 #![cfg_attr(feature = "re", feature(never_type))]
 
-#![cfg_attr(feature = "fast_rsync", feature(file_set_times))]
-
 extern crate libc;
 #[cfg(feature = "crossterm")] extern crate crossterm;
 
@@ -276,6 +274,14 @@ pub fn short_log_time (ms: u64)
     if 1 == 0 {log! ($($args)+)}};
   (1, $($args: tt)+) => {  // proceed as usual
     {log! ($($args)+)}};
+
+  (t $time: expr => $delay: expr, $($args: tt)+) => {{  // $delay repeat by $time
+    static LL: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new (0);
+    let now = $time as i64;
+    let Δ = now - LL.load (core::sync::atomic::Ordering::Relaxed);
+    if $delay <= Δ {
+      LL.store (now, core::sync::atomic::Ordering::Relaxed);
+      log! ($($args)+)}}};
 
   (q $command: expr, $($args: tt)+) => {{
     $crate::with_status_line (&|| {
@@ -734,6 +740,10 @@ fn test_bedstead() {
 
 pub fn round_to (decimals: u32, num: f32) -> f32 {
   let r = 10u32 .pow (decimals) as f32;
+  (num * r) .round() / r}
+
+pub fn round8 (decimals: u32, num: f64) -> f64 {
+  let r = 10u32 .pow (decimals) as f64;
   (num * r) .round() / r}
 
 /// Allows to sort by float, but panics if there's a NaN or infinity
