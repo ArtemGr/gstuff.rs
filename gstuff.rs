@@ -360,7 +360,49 @@ pub fn short_log_time (ms: u64)
     wite! (&mut is, $($args)+) .expect ("!wite");
     is})}
 
-//⌥ implement fast `Local` to ISO 8601 shorthand and back to `Local` helpers
+/// into integer with centiseconds "%y%m%d%H%M%S%.2f"
+#[cfg(feature = "chrono")]
+pub fn dt2ics (dt: &chrono::DateTime<chrono::Local>) -> i64 {
+  use chrono::{Datelike, Timelike};
+  let y = dt.year() as i64;
+  let m = dt.month() as i64;
+  let d = dt.day() as i64;
+  let ti = dt.time();
+  let h = ti.hour() as i64;
+  let min = ti.minute() as i64;
+  let s = ti.second() as i64;
+  let ms = ti.nanosecond() as i64 / 10000000;
+  y%1000 * 1e12 as i64 + m * 10000000000 + d * 100000000 + h * 1000000 + min * 10000 + s * 100 + ms}
+
+/// from integer with centiseconds "%y%m%d%H%M%S%.2f"
+#[cfg(all(feature = "chrono", feature = "re"))]
+pub fn ics2ldt (ims: i64) -> re::Re<chrono::DateTime<chrono::Local>> {
+  use chrono::{TimeZone, Timelike};
+  let dt = chrono::Local.with_ymd_and_hms (
+    (ims / 1000000000000 + 2000) as i32,
+    (ims / 10000000000 % 100) as u32,
+    (ims / 100000000 % 100) as u32,
+    (ims / 1000000 % 100) as u32,
+    (ims / 10000 % 100) as u32,
+    (ims / 100 % 100) as u32) .earliest()?;
+  let dt = dt.with_nanosecond ((ims % 100) as u32 * 10000000)?;
+  re::Re::Ok (dt)}
+
+/// from integer with centiseconds "%y%m%d%H%M%S%.2f"
+#[cfg(all(feature = "chrono", feature = "re"))]
+pub fn ics2ndt (ims: i64) -> re::Re<chrono::NaiveDateTime> {
+  use chrono::{TimeZone, Timelike};
+  let dt = chrono::NaiveDateTime::new (
+    chrono::NaiveDate::from_ymd_opt (
+      (ims / 1000000000000 + 2000) as i32,
+      (ims / 10000000000 % 100) as u32,
+      (ims / 100000000 % 100) as u32)?,
+    chrono::NaiveTime::from_hms_nano_opt (
+      (ims / 1000000 % 100) as u32,
+      (ims / 10000 % 100) as u32,
+      (ims / 100 % 100) as u32,
+      (ims % 100) as u32 * 10000000)?);
+  re::Re::Ok (dt)}
 
 /// Extend ISO 8601 shorthand into full RFC 3339 timestamp.  
 /// “2022-12-12T12” → “2022-12-12T12:00:00Z”
@@ -374,6 +416,105 @@ pub fn short_log_time (ms: u64)
 #[cfg(feature = "fomat-macros")]
 #[macro_export] macro_rules! iso8601toL {($short: expr) => {
   Local.from_local_datetime (&(DateTime::parse_from_rfc3339 (&iso8601z! ($short))?) .naive_utc()) .earliest()?}}
+
+/// ISO 8601 shorthand “2022-12-12T12” converted into integer with centiseconds "%y%m%d%H%M%S%.2f"
+pub fn iso8601ics (iso: &[u8]) -> i64 {
+  let mut ics: [u8; 14] = *b"00000000000000";
+  if 4 <= iso.len() {
+    ics[0] = iso[2]; ics[1] = iso[3];
+    if 7 <= iso.len() && iso[4] == b'-' {
+      ics[2] = iso[5]; ics[3] = iso[6];
+      if 10 <= iso.len() && iso[7] == b'-' {
+        ics[4] = iso[8]; ics[5] = iso[9];
+        if 13 <= iso.len() && iso[10] == b'T' {
+          ics[6] = iso[11]; ics[7] = iso[12];
+          if 16 <= iso.len() && iso[13] == b':' {
+            ics[8] = iso[14]; ics[9] = iso[15];
+            if 19 <= iso.len() && iso[16] == b':' {
+              ics[10] = iso[17]; ics[11] = iso[18];
+              if 22 <= iso.len() && iso[19] == b'.' {
+                ics[12] = iso[20]; ics[13] = iso[21]}}}}}}}
+  match unsafe {std::str::from_utf8_unchecked (&ics)} .parse() {Ok (k) => k, Err (_err) => 0}}
+
+#[cfg(all(test, feature = "nightly", feature = "chrono", feature = "inlinable_string", feature = "re"))] mod time_bench {
+  extern crate test;
+  use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone, Timelike};
+  use crate::{dt2ics, ics2ldt, ics2ndt, iso8601ics, now_ms, re::Re};
+  use fomat_macros::wite;
+  use rand::{rngs::SmallRng, seq::index::sample, Rng, SeedableRng};
+  use test::black_box;
+
+  #[bench] fn iso8601icsᵇ (bm: &mut test::Bencher) {bm.iter (|| {
+    let ics = iso8601ics (b"4321-12-23T13:14:15.987");
+    assert! (ics == 21122313141598, "{}", ics)})}
+
+  #[bench] fn iso8601tol (bm: &mut test::Bencher) {
+    let mut rng = SmallRng::seed_from_u64 (now_ms());
+    let mut samples = Vec::with_capacity (65536);
+    while samples.len() < samples.capacity() {
+      let ms = rng.gen::<i64>().abs() / 10 * 10;
+      if let Some (dt) = Local.timestamp_millis_opt (ms) .earliest() {
+        if let Some (dt) = dt.with_year (2000 + dt.year() % 100) {
+          let sdt = ifomat! ((dt.format ("%Y-%m-%dT%H:%M:%S%.3f")));
+          samples.push ((dt, sdt))}}}
+    let mut sx = 0;
+    bm.iter (|| {
+      let ics = iso8601ics (samples[sx].1.as_bytes());
+      let dt = ics2ldt (ics) .unwrap();
+      let odt = &samples[sx].0;
+      assert! (
+        dt.year() == odt.year() && dt.month() == odt.month() && dt.day() == odt.day()
+         && dt.hour() == odt.hour() && dt.minute() == odt.minute() && dt.second() == odt.second()
+         && dt.nanosecond() == odt.nanosecond(),
+        "{} {} <> {} {}", ics, dt, samples[sx].1, odt);
+      sx += 1; if samples.len() <= sx {sx = 0}})}
+
+  #[bench] fn iso8601ton (bm: &mut test::Bencher) {
+    let mut rng = SmallRng::seed_from_u64 (now_ms());
+    let mut samples = Vec::with_capacity (65536);
+    while samples.len() < samples.capacity() {
+      let ms = rng.gen::<i64>().abs() / 10 * 10;
+      if let Some (dt) = Local.timestamp_millis_opt (ms) .earliest() {
+        if let Some (dt) = dt.with_year (2000 + dt.year() % 100) {
+          let sdt = ifomat! ((dt.format ("%Y-%m-%dT%H:%M:%S%.3f")));
+          samples.push ((dt, sdt))}}}
+    let mut sx = 0;
+    bm.iter (|| {
+      let ics = iso8601ics (samples[sx].1.as_bytes());
+      let dt = ics2ndt (ics) .unwrap();
+      let odt = &samples[sx].0;
+      assert! (
+        dt.year() == odt.year() && dt.month() == odt.month() && dt.day() == odt.day()
+         && dt.hour() == odt.hour() && dt.minute() == odt.minute() && dt.second() == odt.second()
+         && dt.nanosecond() == odt.nanosecond(),
+        "{} {} <> {} {}", ics, dt, samples[sx].1, odt);
+      sx += 1; if samples.len() <= sx {sx = 0}})}
+
+  #[bench] fn chrono_from_str (bm: &mut test::Bencher) {bm.iter (|| {
+    let dt = NaiveDateTime::parse_from_str ("4321-12-23T13:14:15", "%Y-%m-%dT%H:%M:%S") .unwrap();
+    assert! (dt.year() == 4321 && dt.month() == 12 && dt.day() == 23 
+      && dt.hour() == 13 && dt.minute() == 14 && dt.second() == 15)})}
+
+  #[bench] fn chrono_from_rfc3339 (bm: &mut test::Bencher) {bm.iter (|| {
+    let dt = DateTime::parse_from_rfc3339 ("4321-12-23T13:14:15Z") .unwrap();
+    assert! (dt.year() == 4321 && dt.month() == 12 && dt.day() == 23
+      && dt.hour() == 13 && dt.minute() == 14 && dt.second() == 15)})}
+
+  #[bench] fn iso8601tol_macro (bm: &mut test::Bencher) {bm.iter (|| {
+    fn f() -> Re<DateTime<Local>> {Re::Ok (iso8601toL! ("4321-12-23T13:14:15"))}
+    let dt = f().unwrap();
+    assert! (dt.year() == 4321 && dt.month() == 12 && dt.day() == 23
+      && dt.hour() == 13 && dt.minute() == 14 && dt.second() == 15)})}
+
+  #[bench] fn icsᵇ (bm: &mut test::Bencher) {
+    let mut rng = SmallRng::seed_from_u64 (now_ms());
+    bm.iter (|| {
+      let ms = rng.gen::<i64>().abs() / 10 * 10;
+      if let Some (dt) = Local.timestamp_millis_opt (ms) .earliest() {
+        if let Some (dt) = dt.with_year (2000 + dt.year() % 100) {
+          let ics = dt2ics (&dt);
+          let dtʹ = ics2ldt (ics) .unwrap();
+          assert_eq! (dt, dtʹ)}}})}}
 
 /// Takes a netstring from the front of the slice.
 ///
