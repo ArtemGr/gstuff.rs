@@ -13,7 +13,7 @@ extern crate libc;
 //use std::marker::PhantomData;
 use core::any::Any;
 use core::arch::asm;
-use core::str::{from_utf8_unchecked}; //, FromStr};
+use core::str::from_utf8_unchecked;
 use core::sync::atomic::{AtomicI8, AtomicUsize, Ordering};
 use std::fs;
 use std::io::{self, Read};
@@ -398,6 +398,22 @@ pub fn ldt2ics (dt: &chrono::DateTime<chrono::Local>) -> i64 {
   let cs = ti.nanosecond() as i64 / 10000000;
   y%1000 * 1e12 as i64 + m * 10000000000 + d * 100000000 + h * 1000000 + min * 10000 + s * 100 + cs}
 
+/// UNIX time into ISO 8601 "%Y-%m-%dT%H:%M:%S%.3fZ", UTC
+#[cfg(all(feature = "inlinable_string"))]
+pub fn ms2iso8601 (ms: i64) -> inlinable_string::InlinableString {
+  use inlinable_string::{InlinableString, StringExt};
+  use std::fmt::Write as FmtWrite;
+  let day = (ms / 1000 / 86400) as i32;
+  let h = ((ms / 1000) % 86400) / 3600;
+  let min = ((ms / 1000) % 3600) / 60;
+  let s = (ms / 1000) % 60;
+  let ms = ms % 1000;
+  let (y, m, d) = civil_from_days (day);
+  let mut is = inlinable_string::InlinableString::new();
+  // NB: Here `write!` is faster than `wite!`
+  write! (&mut is, "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z", y, m, d, h, min, s, ms) .expect ("!write!");
+  is}
+
 /// UNIX time into integer with centiseconds "%y%m%d%H%M%S%.2f", UTC
 pub fn ms2ics (ms: i64) -> i64 {
   let day = (ms / 1000 / 86400) as i32;
@@ -457,7 +473,7 @@ pub fn ics2ndt (ims: i64) -> re::Re<chrono::NaiveDateTime> {
 #[macro_export] macro_rules! iso8601z {
   ($date_or_time: expr) => {{
     let sufff = ($date_or_time.len() as i32 - 10) .max (0) as usize;
-    ifomat! (($date_or_time) (&"T00:00:00Z"[sufff..]))}}}
+    ifomat! (($date_or_time) if sufff < 10 {(&"T00:00:00Z"[sufff..])})}}}
 
 /// ISO 8601 shorthand “2022-12-12T12” parsed as a Local
 #[cfg(feature = "fomat-macros")]
@@ -486,15 +502,37 @@ pub fn iso8601ics (iso: &[u8]) -> i64 {
 #[cfg(all(test, feature = "nightly", feature = "chrono", feature = "inlinable_string", feature = "re"))] mod time_bench {
   extern crate test;
   use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone, Timelike, Utc};
-  use crate::{civil_from_days, days_from_civil, ldt2ics, ics2ldt, ics2ndt, iso8601ics, ics2ms, ms2ics, now_ms, re::Re};
+  use crate::{civil_from_days, days_from_civil, ics2ldt, ics2ms, ics2ndt, iso8601ics, ldt2ics, ms2ics, ms2iso8601, now_ms, re::Re};
   use fomat_macros::wite;
   use inlinable_string::InlinableString;
   use rand::{rngs::SmallRng, seq::index::sample, Rng, SeedableRng};
   use test::black_box;
 
-  #[bench] fn iso8601icsᵇ (bm: &mut test::Bencher) {bm.iter (|| {
-    let ics = iso8601ics (b"4321-12-23T13:14:15.987");
-    assert! (ics == 21122313141598, "{}", ics)})}
+  #[bench] fn iso8601icsᵇ (bm: &mut test::Bencher) {
+    assert! (00000000000000 == iso8601ics (b""));
+    assert! (24000000000000 == iso8601ics (b"2024"));
+    assert! (24120000000000 == iso8601ics (b"2024-12"));
+    assert! (24121300000000 == iso8601ics (b"2024-12-13"));
+    assert! (24121321000000 == iso8601ics (b"2024-12-13T21"));
+    assert! (24121314150000 == iso8601ics (b"2024-12-13T14:15"));
+    assert! (24121314151600 == iso8601ics (b"2024-12-13T14:15:16"));
+    assert! (24121314151698 == iso8601ics (b"2024-12-13T14:15:16.980"));
+    assert! (24121314151698 == iso8601ics (b"3024-12-13T14:15:16.980Z"));
+    bm.iter (|| {
+      let ics = iso8601ics (b"4321-12-23T13:14:15.987");
+      assert! (black_box (ics) == 21122313141598, "{}", ics)})}
+
+  #[bench] fn ms2iso8601ᵇ (bm: &mut test::Bencher) {
+    let mut rng = SmallRng::seed_from_u64 (now_ms());
+    bm.iter (|| {
+      let it = ms2iso8601 (rng.gen::<i64>().abs());
+      assert! (black_box (it) .ends_with ('Z'))})}
+
+  #[bench] fn chrono_iso8601 (bm: &mut test::Bencher) {
+    let dt = Utc::now();
+    bm.iter (|| {
+      let it = ifomat! ((dt.format ("%Y-%m-%dT%H:%M:%S%.3fZ")));
+      assert! (it.ends_with ('Z'))})}
 
   fn make_samples() -> Vec<(DateTime<Local>, InlinableString)> {
     let mut rng = SmallRng::seed_from_u64 (now_ms());
@@ -506,6 +544,10 @@ pub fn iso8601ics (iso: &[u8]) -> i64 {
         let (y, m, d) = civil_from_days (day);
         assert! (udt.year() == y && udt.month() == m && udt.day() == d, "{:?}, y{}, m{}, d{}", udt, y, m, d);
         assert! (days_from_civil (y, m, d) == day);
+        let cit = ifomat! ((udt.format ("%Y-%m-%dT%H:%M:%S%.3fZ")));
+        let cit = if cit.starts_with ('+') {&cit[1..]} else {&cit};
+        let dit = ms2iso8601 (ms);
+        assert! (cit == dit, "{} <> {}", cit, dit);
         if let Some (udt) = udt.with_year (2000 + udt.year() % 100) {
           let ms = udt.timestamp_millis();
           let ics = ms2ics (ms);
