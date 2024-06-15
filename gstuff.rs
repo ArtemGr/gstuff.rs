@@ -375,7 +375,7 @@ pub fn civil_from_days (mut z: i32) -> (i32, u32, u32) {
   let m = (mp as i32 + if (mp as i32) < 10 {3} else {-9}) as u32;  // 1..=12
   (y + if m <= 2 {1} else {0}, m, d)}
 
-/// year, month, day UTC ↦ now_ms / 1000 / 86400
+/// year, month 1..=12, day 1..=31 UTC ↦ UNIX milliseconds (aka now_ms) / 1000 / 86400
 pub fn days_from_civil (mut y: i32, m: u32, d: u32) -> i32 {
   y -= if m <= 2 {1} else {0};
   let era = if 0 <= y {y} else {y - 399} / 400;
@@ -507,6 +507,22 @@ pub fn iso8601ics (iso: &[u8]) -> i64 {
   use inlinable_string::InlinableString;
   use rand::{rngs::SmallRng, seq::index::sample, Rng, SeedableRng};
   use test::black_box;
+
+  #[bench] fn duration (bm: &mut test::Bencher) {
+    assert! (946684800000 == days_from_civil (2000, 1, 1) as i64 * 86400 * 1000);
+    let duration = 118050;
+    assert! ("00:01:58.050" == &ms2iso8601 (946684800000 + duration) [11..23]);
+    assert! (      15805 == ms2ics (946684800000 + duration) - 10100000000);
+    let mut ms = 0;
+    bm.iter (|| {  // verify that `ms2ics` can be reused to examine a time delta
+      let ics = ms2ics (946684800000 + ms as i64) - 10100000000;
+      let tm_min = (ics / 10000 % 100) as i64;
+      let tm_sec = (ics / 100 % 100) as i64;
+      let ims = (ics % 100 * 10) as i64;
+      let msʹ = ims + tm_sec * 1000 + tm_min * 60000;
+      assert! (ms == msʹ);
+      ms += 10;
+      if 3600 * 1000 <= ms {ms = 0}})}
 
   #[bench] fn iso8601icsᵇ (bm: &mut test::Bencher) {
     assert! (00000000000000 == iso8601ics (b""));
