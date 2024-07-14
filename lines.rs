@@ -574,6 +574,17 @@ pub fn crc16ccitt_aug (mut crc: u16) -> u16 {
   use std::rc::Rc;
   use test::black_box;
 
+  #[bench] fn crc16mb (bm: &mut test::Bencher) {
+    let mut buf = [0u8; 1234];
+    let mut ch = 0; for ci in 0..buf.len() {buf[ci] = ch; ch = ch.wrapping_add (1)}
+    let (mut fr, mut bytes) = (0, 0);
+    bm.iter (|| {
+      let mut crc = 0xFFFF;
+      for &ch in &buf[fr..] {crc = crc16ccitt (crc, test::black_box (ch))}
+      bytes += buf.len() - fr;
+      fr += 1; if 321 < fr {fr = 0}});
+    bm.bytes = bytes as u64}
+
   #[bench] fn crc16 (bm: &mut test::Bencher) {
     bm.iter (|| {
       assert_eq! (0x1D0F, crc16ccitt_aug (black_box (0xFFFF)))})}

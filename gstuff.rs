@@ -819,10 +819,9 @@ impl<'a> FileLock<'a> {
   ///
   /// The returned structure will automatically remove the lock file when dropped.
   /// 
-  ///     if let Some (lock) = try_s! (FileLock::lock (&"something.lock", 600.)) {
-  ///       // ... Your code here ...
-  ///       drop (lock)
-  ///     }
+  ///     let Some (lock) = FileLock::lock (&lockᵖ, 123.)? else {log! ("Locked."); return Re::Ok(())};
+  ///     // ... Your code here ...
+  ///     drop (lock)
   pub fn lock (lock_path: &'a dyn AsRef<Path>, ttl_sec: f64) -> Result<Option<FileLock<'a>>, String> {
     let mut cycle = 0u8;
     loop {

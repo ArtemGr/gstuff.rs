@@ -1,6 +1,6 @@
 [package]
 name = "gstuff"
-version = "0.8.16"
+version = "0.8.17"
 edition = "2021"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
@@ -23,13 +23,14 @@ rdtsc = []
 re = ["fomat-macros"]
 lines = ["re", "winapi", "memmap2", "memchr"]
 sqlite = ["lines", "re", "reffers", "rusqlite", "smallvec", "crossterm", "chrono", "fomat-macros"]
+sync = ["fast_rsync", "gxhash"]
 
 [dependencies]
-ahash = {version = "0.8", default-features = false, features = ["compile-time-rng", "std"], optional = true}
 chrono = {version = "0.4", optional = true}
 crossterm = {version = "0.27", optional = true}
 fast_rsync = {version = "0.2", optional = true}
 fomat-macros = {version = "0.3", optional = true}
+gxhash = {version = "3", optional = true}
 indexmap = {version = "2", optional = true}
 inlinable_string = {version = "0.1", optional = true}
 libc = "0.2"
