@@ -24,10 +24,11 @@ re = ["fomat-macros"]
 lines = ["re", "winapi", "memmap2", "memchr"]
 sqlite = ["lines", "re", "reffers", "rusqlite", "smallvec", "crossterm", "chrono", "fomat-macros"]
 sync = ["fast_rsync", "gxhash"]
+link = ["fomat-macros", "gxhash", "indexmap", "inlinable_string", "serde_json"]
 
 [dependencies]
 chrono = {version = "0.4", optional = true}
-crossterm = {version = "0.27", optional = true}
+crossterm = {version = "0.28", optional = true}
 fast_rsync = {version = "0.2", optional = true}
 fomat-macros = {version = "0.3", optional = true}
 gxhash = {version = "3", optional = true}
@@ -39,8 +40,9 @@ memmap2 = {version = "0.9", optional = true}
 num-bigint = {version = "0.4", optional = true}
 num-traits = {version = "0.2", optional = true}
 reffers = {version = "0.7", optional = true}
-rusqlite = {version = "0.31", features = ["bundled", "functions", "vtab"], optional = true}
+rusqlite = {version = "0.32", features = ["bundled", "functions", "vtab"], optional = true}
 serde = {version = "1", features = ["derive"], optional = true}
+serde_json = {version = "1", optional = true}
 smallvec = {version = "1", optional = true, features = ["const_generics", "union", "write"]}
 winapi = {version = "0.3", optional = true, features = ["errhandlingapi", "fileapi", "wingdi", "wincon", "winuser", "std"]}
 

@@ -9,20 +9,23 @@
 extern crate libc;
 #[cfg(feature = "crossterm")] extern crate crossterm;
 
-//use std::fmt;
-//use std::marker::PhantomData;
 use core::any::Any;
 use core::arch::asm;
+use core::cell::UnsafeCell;
 use core::str::from_utf8_unchecked;
 use core::sync::atomic::{AtomicI8, AtomicUsize, Ordering};
+use std::fmt::{self, Write};
 use std::fs;
+use std::hint::spin_loop;
 use std::io::{self, Read};
+use std::mem::MaybeUninit;
+use std::ops::{Deref, DerefMut};
 use std::os::raw::c_int;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-#[cfg(test)] use std::thread::sleep;
 
 /// Shortcut to path->filename conversion.
 ///
@@ -114,6 +117,9 @@ pub mod re;
 
 #[cfg(feature = "lines")]
 pub mod lines;
+
+#[cfg(feature = "link")]
+pub mod link;
 
 // --- status line -------
 
@@ -362,8 +368,8 @@ pub fn short_log_time (ms: u64)
 
 /// now_ms / 1000 / 86400 ↦ year, month, day UTC
 /// 
-/// https://stackoverflow.com/a/32158604/257568
-pub fn civil_from_days (mut z: i32) -> (i32, u32, u32) {
+/// https://stackoverflow.com/a/32158604/257568, http://howardhinnant.github.io/date_algorithms.html
+pub const fn civil_from_days (mut z: i32) -> (i32, u32, u32) {
   z += 719468;
   let era = if 0 <= z {z} else {z - 146096} / 146097;
   let doe = (z - era * 146097) as u32;  // 0..=146096
@@ -376,7 +382,7 @@ pub fn civil_from_days (mut z: i32) -> (i32, u32, u32) {
   (y + if m <= 2 {1} else {0}, m, d)}
 
 /// year, month 1..=12, day 1..=31 UTC ↦ UNIX milliseconds (aka now_ms) / 1000 / 86400
-pub fn days_from_civil (mut y: i32, m: u32, d: u32) -> i32 {
+pub const fn days_from_civil (mut y: i32, m: u32, d: u32) -> i32 {
   y -= if m <= 2 {1} else {0};
   let era = if 0 <= y {y} else {y - 399} / 400;
   let yoe = (y - era * 400) as u32;      // 0..=399
@@ -399,7 +405,7 @@ pub fn ldt2ics (dt: &chrono::DateTime<chrono::Local>) -> i64 {
   y%1000 * 1e12 as i64 + m * 10000000000 + d * 100000000 + h * 1000000 + min * 10000 + s * 100 + cs}
 
 /// UNIX time into ISO 8601 "%Y-%m-%dT%H:%M:%S%.3fZ", UTC
-#[cfg(all(feature = "inlinable_string"))]
+#[cfg(feature = "inlinable_string")]
 pub fn ms2iso8601 (ms: i64) -> inlinable_string::InlinableString {
   use inlinable_string::{InlinableString, StringExt};
   use std::fmt::Write as FmtWrite;
@@ -415,7 +421,7 @@ pub fn ms2iso8601 (ms: i64) -> inlinable_string::InlinableString {
   is}
 
 /// UNIX time into integer with centiseconds "%y%m%d%H%M%S%.2f", UTC
-pub fn ms2ics (ms: i64) -> i64 {
+pub const fn ms2ics (ms: i64) -> i64 {
   let day = (ms / 1000 / 86400) as i32;
   let h = ((ms / 1000) % 86400) / 3600;
   let min = ((ms / 1000) % 3600) / 60;
@@ -426,7 +432,7 @@ pub fn ms2ics (ms: i64) -> i64 {
   y%1000 * 1e12 as i64 + m * 10000000000 + d * 100000000 + h * 1000000 + min * 10000 + s * 100 + cs}
 
 /// integer with centiseconds "%y%m%d%H%M%S%.2f" into UNIX time in milliseconds
-pub fn ics2ms (ics: i64) -> i64 {
+pub const fn ics2ms (ics: i64) -> i64 {
   let day = days_from_civil (
     (ics / 1000000000000 + 2000) as i32,
     (ics / 10000000000 % 100) as u32,
@@ -672,6 +678,7 @@ pub fn slurp (path: &dyn AsRef<Path>) -> Vec<u8> {
     Err (ref err) if err.kind() == io::ErrorKind::NotFound => return Vec::new(),
     Err (err) => panic! ("Can't open {:?}: {}", path.as_ref(), err)};
   let mut buf = Vec::new();
+  // Might issue a `stat` / `metadata` call to reserve space in the `buf`
   file.read_to_end (&mut buf) .expect ("!read");
   buf}
 
@@ -749,7 +756,7 @@ pub fn now_float() -> f64 {
   let now = SystemTime::now().duration_since (UNIX_EPOCH) .expect ("!duration_since") .as_secs();
   let t1 = now_float();
   assert_eq! (now, t1 as u64);
-  sleep (Duration::from_millis (100));
+  thread::sleep (Duration::from_millis (100));
   let t2 = now_float();
   let delta = t2 - t1;
   assert! (delta >= 0.098 && delta <= 0.150, "delta: {}", delta);}
@@ -765,7 +772,7 @@ pub fn now_ms() -> u64 {
 
 #[test] fn test_now_ms() {
   let t1 = now_ms();
-  sleep (Duration::from_millis (100));
+  thread::sleep (Duration::from_millis (100));
   let t2 = now_ms();
   let delta = t2 - t1;
   assert! (delta >= 98 && delta <= 150, "delta: {}", delta);}
@@ -914,50 +921,137 @@ impl Iterator for ProcIt {
         if cmdline.is_empty() {return self.next()}
         Some (ProcEn {name: name.into(), path: path, cmdline: cmdline.split ('\0') .map (String::from) .collect()})}}}}
 
-/// Reason for having this is that neither `multiqueue` nor `crossbeam_channel` implement UnwindSafe currently.
-///
-/// cf. https://github.com/crossbeam-rs/crossbeam-channel/issues/25.
-///
-/// Condvar is hopefully unwind-save since it's using a poisoning Mutex. Should unit-test it though.
-pub mod oneshot {
-  use std::panic::AssertUnwindSafe;
-  use std::sync::{Arc, Condvar, Mutex};
+fn pause_yield() {
+  spin_loop();
+  thread::yield_now();  // cf. https://stackoverflow.com/a/69847156/257568
+  spin_loop()}
 
-  /// Accepts one value into the channel.
-  pub struct Sender<T> (Arc<Mutex<Option<T>>>, Arc<AssertUnwindSafe<Condvar>>);
-  impl<T> Sender<T> {
-    pub fn send (self, v: T) {
-      { let arc_mutex = self.0;  // Moving `self.0` in order to drop it first.
-        { let lr = arc_mutex.lock();
-          if let Ok (mut lock) = lr {*lock = Some (v)} } }
-      self.1.notify_one()}}
+pub struct IniMutex<T> {au: AtomicI8, vc: UnsafeCell<MaybeUninit<T>>}
+#[must_use = "if unused the Mutex will immediately unlock"]
+pub struct IniMutexGuard<'a, T> {lo: &'a IniMutex<T>}
 
-  /// Returns the value from the channel.
-  pub struct Receiver<T> (Arc<Mutex<Option<T>>>, Arc<AssertUnwindSafe<Condvar>>);
-  impl<T> Receiver<T> {
-    pub fn recv (self) -> Result<T, String> {
-      let mut arc_mutex = self.0;
-      let arc_condvar = self.1;
-      loop {
-        match Arc::try_unwrap (arc_mutex) {
-          Ok (mutex) => {
-            if let Some (value) = try_s! (mutex.into_inner()) {return Ok (value)}
-            else {return ERR! ("recv] Sender gone without providing a value")}},
-          Err (am) => {
-            arc_mutex = am;
-            let locked_value = try_s! (arc_mutex.lock());
-            if locked_value.is_none() {let _locked_value = try_s! (arc_condvar.wait (locked_value));}}}}}}
+unsafe impl<T: Send> Send for IniMutex<T> {}
+unsafe impl<T: Send> Sync for IniMutex<T> {}
 
-  /// Create a new oneshot channel.
-  pub fn oneshot<T>() -> (Sender<T>, Receiver<T>) {
-    let arc_mutex = Arc::new (Mutex::new (None));
-    let arc_condvar = Arc::new (AssertUnwindSafe (Condvar::new()));
-    (Sender (arc_mutex.clone(), arc_condvar.clone()), Receiver (arc_mutex, arc_condvar))}}
+impl<T> IniMutex<T> {
+  pub const fn none() -> IniMutex<T> {
+    IniMutex {
+      au: AtomicI8::new (0),
+      vc: UnsafeCell::new (MaybeUninit::uninit())}}
 
-#[test] fn test_oneshot() {
-  let (tx, rx) = oneshot::oneshot();
-  std::thread::spawn (|| tx.send (42));
-  assert_eq! (42, rx.recv().expect("!recv"))}
+  pub const fn new (init: T) -> IniMutex<T> {
+    IniMutex {
+      au: AtomicI8::new (1),
+      vc: UnsafeCell::new (MaybeUninit::new (init))}}
+
+  /// `true` if the value is neither locked nor initialized
+  pub fn is_none (&self) -> bool {
+    0 == self.au.load (Ordering::Relaxed)}
+
+  pub fn try_lock (&self) -> Result<IniMutexGuard<'_, T>, i8> {
+    match self.au.compare_exchange (1, 2, Ordering::Acquire, Ordering::Relaxed) {
+      Ok (1) => Ok (IniMutexGuard {lo: self}),
+      Ok (lock) => Err (lock),
+      Err (au) => Err (au)}}
+
+  pub fn spin (&self) -> IniMutexGuard<'_, T> {
+    loop {
+      if let Ok (lock) = self.try_lock() {return lock}
+      pause_yield()}}
+
+  pub fn try_lock_init (&self, init: &mut dyn FnMut() -> Result<T, String>) -> Result<IniMutexGuard<'_, T>, LockInitErr> {
+    match self.au.compare_exchange (1, 2, Ordering::Acquire, Ordering::Relaxed) {
+      Ok (1) => Ok (IniMutexGuard {lo: self}),
+      Err (0) => match self.au.compare_exchange (0, 2, Ordering::Acquire, Ordering::Relaxed) {
+        Ok (0) => {
+          let vc = unsafe {&mut *self.vc.get()}; 
+          match init() {
+            Ok (vi) => {
+              *vc = MaybeUninit::new (vi);
+              Ok (IniMutexGuard {lo: self})},
+            Err (err) => Err (LockInitErr::Init (err))}},
+        Ok (au) => Err (LockInitErr::Lock (au)),
+        Err (au) => Err (LockInitErr::Lock (au))},
+      Ok (au) => Err (LockInitErr::Lock (au)),
+      Err (au) => Err (LockInitErr::Lock (au))}}
+
+  pub fn spin_init (&self, init: &mut dyn FnMut() -> Result<T, String>) -> Result<IniMutexGuard<'_, T>, String> {
+    loop {
+      match self.try_lock_init (init) {
+        Ok (lock) => break Ok (lock),
+        Err (LockInitErr::Lock (_l)) => pause_yield(),
+        Err (LockInitErr::Init (err)) => break Err (err)}}}}
+
+#[derive (Debug)]
+pub enum LockInitErr {Lock (i8), Init (String)}
+
+impl fmt::Display for LockInitErr {
+  fn fmt (&self, fm: &mut fmt::Formatter) -> fmt::Result {
+    match *self {
+      LockInitErr::Lock (au) => fm.write_fmt (format_args! ("{}", au)),
+      LockInitErr::Init (ref err) => fm.write_str (err)}}}
+
+impl<T: Default> IniMutex<T> {
+  pub fn try_lock_default (&self) -> Result<IniMutexGuard<'_, T>, i8> {
+    match self.au.compare_exchange (1, 2, Ordering::Acquire, Ordering::Relaxed) {
+      Ok (1) => Ok (IniMutexGuard {lo: self}),
+      Err (0) => match self.au.compare_exchange (0, 2, Ordering::Acquire, Ordering::Relaxed) {
+        Ok (0) => {
+          let vc = unsafe {&mut *self.vc.get()}; 
+          *vc = MaybeUninit::new (Default::default());
+          Ok (IniMutexGuard {lo: self})},
+        Ok (au) => Err (au),
+        Err (au) => Err (au)},
+      Ok (au) => Err (au),
+      Err (au) => Err (au)}}
+
+  pub fn spin_default (&self) -> IniMutexGuard<'_, T> {
+    loop {
+      if let Ok (lock) = self.try_lock_default() {return lock}
+      pause_yield()}}}
+
+impl<T> Deref for IniMutexGuard<'_, T> {
+  type Target = T;
+  fn deref (&self) -> &T {
+    let vc = unsafe {&mut *self.lo.vc.get()};
+    unsafe {&*vc.as_ptr()}}}
+
+impl<T> DerefMut for IniMutexGuard<'_, T> {
+  fn deref_mut (&mut self) -> &mut T {
+    let vc = unsafe {&mut *self.lo.vc.get()};
+    unsafe {&mut *vc.as_mut_ptr()}}}
+
+impl<T: fmt::Debug> fmt::Debug for IniMutexGuard<'_, T> {
+  fn fmt (&self, fm: &mut fmt::Formatter) -> fmt::Result {
+    let vc = unsafe {&mut *self.lo.vc.get()};
+    unsafe {fmt::Debug::fmt (&*vc.as_ptr(), fm)}}}
+
+impl<T: fmt::Display> fmt::Display for IniMutexGuard<'_, T> {
+  fn fmt (&self, fm: &mut fmt::Formatter) -> fmt::Result {
+    let vc = unsafe {&mut *self.lo.vc.get()};
+    unsafe {(*vc.as_ptr()) .fmt (fm)}}}
+
+impl<T> IniMutexGuard<'_, T> {
+  /// `drop` the instance and reset the mutex to uninitialized
+  pub fn evict (lock: IniMutexGuard<'_, T>) {
+    let vc = unsafe {&mut *lock.lo.vc.get()};
+    unsafe {vc.assume_init_drop()}
+    lock.lo.au.store (0, Ordering::Release);
+    core::mem::forget (lock)}}
+
+impl<T> Drop for IniMutexGuard<'_, T> {
+  fn drop (&mut self) {
+    self.lo.au.store (1, Ordering::Release)}}
+
+impl<T> Drop for IniMutex<T> {
+  fn drop (&mut self) {
+    if self.au.load (Ordering::Acquire) != 0 {
+      let vc = unsafe {&mut *self.vc.get()};
+      unsafe {vc.assume_init_drop()}}}}
+
+/// Cached hostname
+#[cfg(feature = "inlinable_string")]
+pub static HOST: IniMutex<inlinable_string::InlinableString> = IniMutex::none();
 
 /// Helps logging binary data (particularly with text-readable parts, such as bencode, netstring)
 /// by replacing all the non-printable bytes with the `blank` character.
@@ -1011,8 +1105,8 @@ use std::hash::{Hash, Hasher};
 impl Hash for OrdFloat {
   fn hash<H: Hasher> (&self, state: &mut H) {
     self.0.to_bits().hash (state)}}
-impl std::fmt::Display for OrdFloat {
-  fn fmt (&self, fm: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl fmt::Display for OrdFloat {
+  fn fmt (&self, fm: &mut fmt::Formatter) -> fmt::Result {
     self.0.fmt (fm)}}
 
 /// Allows to sort by float, but panics if there's a NaN or infinity
@@ -1026,6 +1120,6 @@ impl Ord for OrdF32 {
 impl Hash for OrdF32 {
   fn hash<H: Hasher> (&self, state: &mut H) {
     self.0.to_bits().hash (state)}}
-impl std::fmt::Display for OrdF32 {
-  fn fmt (&self, fm: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl fmt::Display for OrdF32 {
+  fn fmt (&self, fm: &mut fmt::Formatter) -> fmt::Result {
     self.0.fmt (fm)}}

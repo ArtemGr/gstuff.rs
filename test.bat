@@ -1,3 +1,5 @@
+set RUSTFLAGS=-Ctarget-feature=+aes,+sse2
+
 cargo test --all-features
 cargo test --features base62
 
