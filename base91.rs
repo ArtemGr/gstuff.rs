@@ -164,10 +164,13 @@ pub fn capacity_hint (base91len: usize) -> usize {
     let mut buf = SmallVec::<[u8; 256]>::new();
     for (plain, b91samp) in test_cases.iter() {
       buf.clear();
+      let cap = plain.len() * 12345 / 10000 + 1;  // Example of guessing capacity per “data expansion rate” of 123.077%.
+      buf.grow (cap);
       let mut b91 = Base91Output::new (&BASE91NORM, &mut buf);
       b91.write (plain) .unwrap();
       b91.flush().unwrap();
       assert_eq! (&buf[..], *b91samp);
+      assert! (buf.len() <= cap);
 
       let mut debuf = SmallVec::<[u8; 256]>::new();
       BASE91NORM.decode (b91samp, |ch| debuf.push (ch)) .unwrap();
