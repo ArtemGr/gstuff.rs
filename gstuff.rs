@@ -100,8 +100,8 @@ pub fn filename<'a> (path: &'a str) -> &'a str {
 ///
 /// Examples: `ERR! ("too bad")`; `ERR! ("{}", foo)`;
 #[macro_export] macro_rules! ERR {
-  ($format: expr, $($args: tt)+) => {Err (ERRL! ($format, $($args)+))};
-  ($format: expr) => {Err (ERRL! ($format))}}
+  ($format: expr, $($args: tt)+) => {Err ($crate::ERRL! ($format, $($args)+))};
+  ($format: expr) => {Err ($crate::ERRL! ($format))}}
 
 #[cfg(feature = "base62")]
 pub mod base62;
@@ -669,7 +669,8 @@ pub fn with_hostname (visitor: &mut dyn FnMut (&[u8])) -> Result<(), std::io::Er
   let mut hostname = String::new();
   with_hostname (&mut |bytes| hostname = String::from_utf8_lossy (bytes) .into_owned()) .unwrap();}
 
-/// Read contents of the file into a `Vec`.
+/// Read contents of the file into a `Vec`.  
+/// Similar to `std::fs::read`.
 ///
 /// Returns an empty `Vec` if the file is not present under the given path.
 pub fn slurp (path: &dyn AsRef<Path>) -> Vec<u8> {
@@ -678,7 +679,7 @@ pub fn slurp (path: &dyn AsRef<Path>) -> Vec<u8> {
     Err (ref err) if err.kind() == io::ErrorKind::NotFound => return Vec::new(),
     Err (err) => panic! ("Can't open {:?}: {}", path.as_ref(), err)};
   let mut buf = Vec::new();
-  // Might issue a `stat` / `metadata` call to reserve space in the `buf`
+  // Might issue a `stat` / `metadata` call to reserve space in the `buf`, aka `buffer_capacity_required`
   file.read_to_end (&mut buf) .expect ("!read");
   buf}
 
@@ -864,9 +865,9 @@ impl<'a> FileLock<'a> {
 impl<'a> Drop for FileLock<'a> {
   fn drop (&mut self) {
     let _ = std::fs::remove_file (self.lock_path);}}
-impl<'a> std::fmt::Debug for FileLock<'a> {
-  fn fmt (&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-    write! (f, "FileLock ({:?}, {})", self.lock_path.as_ref(), self.ttl_sec)}}
+impl<'a> fmt::Debug for FileLock<'a> {
+  fn fmt (&self, ft: &mut fmt::Formatter) -> fmt::Result {
+    write! (ft, "FileLock ({:?}, {})", self.lock_path.as_ref(), self.ttl_sec)}}
 
 /// Process entry in /proc.
 #[derive(Debug)]
@@ -921,6 +922,8 @@ impl Iterator for ProcIt {
         if cmdline.is_empty() {return self.next()}
         Some (ProcEn {name: name.into(), path: path, cmdline: cmdline.split ('\0') .map (String::from) .collect()})}}}}
 
+pub static mut SPIN_OUT: u32 = 1234567;
+
 fn pause_yield() {
   spin_loop();
   thread::yield_now();  // cf. https://stackoverflow.com/a/69847156/257568
@@ -948,39 +951,54 @@ impl<T> IniMutex<T> {
   pub fn is_none (&self) -> bool {
     0 == self.au.load (Ordering::Relaxed)}
 
-  pub fn try_lock (&self) -> Result<IniMutexGuard<'_, T>, i8> {
+  /// `true` if the value is initialized
+  pub fn is_some (&self) -> bool {
+    0 != self.au.load (Ordering::Relaxed)}
+
+  /// Attempts to get a lock, returning immediately if locked or uninitialized
+  pub fn lock (&self) -> Result<IniMutexGuard<'_, T>, i8> {
     match self.au.compare_exchange (1, 2, Ordering::Acquire, Ordering::Relaxed) {
       Ok (1) => Ok (IniMutexGuard {lo: self}),
       Ok (lock) => Err (lock),
       Err (au) => Err (au)}}
 
+  //⌥ add a method to spin for a limited amount of time and/or CPU ticks, `spinʷ`
   pub fn spin (&self) -> IniMutexGuard<'_, T> {
     loop {
-      if let Ok (lock) = self.try_lock() {return lock}
+      if let Ok (lock) = self.lock() {return lock}
       pause_yield()}}
 
-  pub fn try_lock_init (&self, init: &mut dyn FnMut() -> Result<T, String>) -> Result<IniMutexGuard<'_, T>, LockInitErr> {
+  #[cfg(feature = "re")]
+  pub fn lock_init (&self, init: &mut dyn FnMut() -> re::Re<T>) -> Result<IniMutexGuard<'_, T>, LockInitErr> {
     match self.au.compare_exchange (1, 2, Ordering::Acquire, Ordering::Relaxed) {
       Ok (1) => Ok (IniMutexGuard {lo: self}),
       Err (0) => match self.au.compare_exchange (0, 2, Ordering::Acquire, Ordering::Relaxed) {
         Ok (0) => {
           let vc = unsafe {&mut *self.vc.get()}; 
           match init() {
-            Ok (vi) => {
+            re::Re::Ok (vi) => {
               *vc = MaybeUninit::new (vi);
               Ok (IniMutexGuard {lo: self})},
-            Err (err) => Err (LockInitErr::Init (err))}},
+            re::Re::Err (err) => Err (LockInitErr::Init (err))}},
         Ok (au) => Err (LockInitErr::Lock (au)),
         Err (au) => Err (LockInitErr::Lock (au))},
       Ok (au) => Err (LockInitErr::Lock (au)),
       Err (au) => Err (LockInitErr::Lock (au))}}
 
-  pub fn spin_init (&self, init: &mut dyn FnMut() -> Result<T, String>) -> Result<IniMutexGuard<'_, T>, String> {
+  #[cfg(feature = "re")]
+  pub fn spin_init (&self, init: &mut dyn FnMut() -> re::Re<T>) -> Result<IniMutexGuard<'_, T>, String> {
     loop {
-      match self.try_lock_init (init) {
+      match self.lock_init (init) {
         Ok (lock) => break Ok (lock),
         Err (LockInitErr::Lock (_l)) => pause_yield(),
-        Err (LockInitErr::Init (err)) => break Err (err)}}}}
+        Err (LockInitErr::Init (err)) => break Err (err)}}}
+
+  /// `drop` the instance and reset the mutex to uninitialized
+  pub fn evict (lock: IniMutexGuard<'_, T>) {
+    let vc = unsafe {&mut *lock.lo.vc.get()};
+    unsafe {vc.assume_init_drop()}
+    lock.lo.au.store (0, Ordering::Release);
+    core::mem::forget (lock)}}
 
 #[derive (Debug)]
 pub enum LockInitErr {Lock (i8), Init (String)}
@@ -992,7 +1010,7 @@ impl fmt::Display for LockInitErr {
       LockInitErr::Init (ref err) => fm.write_str (err)}}}
 
 impl<T: Default> IniMutex<T> {
-  pub fn try_lock_default (&self) -> Result<IniMutexGuard<'_, T>, i8> {
+  pub fn lock_default (&self) -> Result<IniMutexGuard<'_, T>, i8> {
     match self.au.compare_exchange (1, 2, Ordering::Acquire, Ordering::Relaxed) {
       Ok (1) => Ok (IniMutexGuard {lo: self}),
       Err (0) => match self.au.compare_exchange (0, 2, Ordering::Acquire, Ordering::Relaxed) {
@@ -1007,7 +1025,7 @@ impl<T: Default> IniMutex<T> {
 
   pub fn spin_default (&self) -> IniMutexGuard<'_, T> {
     loop {
-      if let Ok (lock) = self.try_lock_default() {return lock}
+      if let Ok (lock) = self.lock_default() {return lock}
       pause_yield()}}}
 
 impl<T> Deref for IniMutexGuard<'_, T> {
@@ -1022,22 +1040,14 @@ impl<T> DerefMut for IniMutexGuard<'_, T> {
     unsafe {&mut *vc.as_mut_ptr()}}}
 
 impl<T: fmt::Debug> fmt::Debug for IniMutexGuard<'_, T> {
-  fn fmt (&self, fm: &mut fmt::Formatter) -> fmt::Result {
+  fn fmt (&self, ft: &mut fmt::Formatter) -> fmt::Result {
     let vc = unsafe {&mut *self.lo.vc.get()};
-    unsafe {fmt::Debug::fmt (&*vc.as_ptr(), fm)}}}
+    unsafe {fmt::Debug::fmt (&*vc.as_ptr(), ft)}}}
 
 impl<T: fmt::Display> fmt::Display for IniMutexGuard<'_, T> {
   fn fmt (&self, fm: &mut fmt::Formatter) -> fmt::Result {
     let vc = unsafe {&mut *self.lo.vc.get()};
     unsafe {(*vc.as_ptr()) .fmt (fm)}}}
-
-impl<T> IniMutexGuard<'_, T> {
-  /// `drop` the instance and reset the mutex to uninitialized
-  pub fn evict (lock: IniMutexGuard<'_, T>) {
-    let vc = unsafe {&mut *lock.lo.vc.get()};
-    unsafe {vc.assume_init_drop()}
-    lock.lo.au.store (0, Ordering::Release);
-    core::mem::forget (lock)}}
 
 impl<T> Drop for IniMutexGuard<'_, T> {
   fn drop (&mut self) {
