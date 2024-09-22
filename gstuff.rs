@@ -994,11 +994,13 @@ impl<T> IniMutex<T> {
         Err (LockInitErr::Init (err)) => break Err (err)}}}
 
   /// `drop` the instance and reset the mutex to uninitialized
-  pub fn evict (lock: IniMutexGuard<'_, T>) {
-    let vc = unsafe {&mut *lock.lo.vc.get()};
-    unsafe {vc.assume_init_drop()}
+  pub fn evict (lock: IniMutexGuard<'_, T>) {unsafe {
+    let vc = &mut *lock.lo.vc.get();
+    let mut swap: T = MaybeUninit::zeroed().assume_init();
+    core::mem::swap (&mut swap, vc.assume_init_mut());
     lock.lo.au.store (0, Ordering::Release);
-    core::mem::forget (lock)}}
+    core::mem::forget (lock);
+    drop (swap)}}}
 
 #[derive (Debug)]
 pub enum LockInitErr {Lock (i8), Init (String)}
