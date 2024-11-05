@@ -149,21 +149,13 @@ impl core::ops::Deref for IsTty {
 #[cfg(feature = "crossterm")]
 pub static ISATTY: IsTty = IsTty {is_tty: AtomicI8::new (0)};
 
-#[cfg(feature = "crossterm")]
-pub static STATUS_LINE_LM: AtomicUsize = AtomicUsize::new (0);
-
 /// The time of the last status line update, in milliseconds.  
 /// Tracked in order to help the calling code with implementing debounce strategies
 /// (for sending each and every update to the terminal might be a bottleneck,
 /// plus it might flicker
 /// and might be changing too fast for a user to register the content).
 #[cfg(feature = "crossterm")]
-pub fn status_line_lm() -> u64 {STATUS_LINE_LM.load (Ordering::Relaxed) as u64}
-
-/// Reset `status_line_lm` value to 0.  
-/// Useful for triggering a status line flush in a code that uses a delta from `status_line_lm` to debounce.
-#[cfg(feature = "crossterm")]
-pub fn status_line_lm0() {STATUS_LINE_LM.store (0, Ordering::Relaxed)}
+pub static STATUS_LINE_LM: AtomicUsize = AtomicUsize::new (0);
 
 /// Clear the rest of the line.
 #[cfg(feature = "crossterm")]
@@ -211,7 +203,7 @@ pub fn status_line (file: &str, line: u32, status: &str) {
       let _ = write! (&mut *status_line, "{}:{}] {}", filename (file), line, status);
       let new_hash = {let mut hasher = DefaultHasher::new(); hasher.write (status_line.as_bytes()); hasher.finish()};
       if old_hash != new_hash {
-        STATUS_LINE_LM.store (now_ms() as usize, Ordering::Relaxed);
+        STATUS_LINE_LM.s (now_ms() as usize);
 
         // Try to keep the status line withing the terminal bounds.
         match crossterm::terminal::size() {
@@ -233,7 +225,7 @@ pub fn status_line_clear() -> String {
   if let Ok (mut status_line) = unsafe {STATUS_LINE.lock()} {
     if *ISATTY && !status_line.is_empty() {
       let mut stdout = stdout();
-        STATUS_LINE_LM.store (now_ms() as usize, Ordering::Relaxed);
+        STATUS_LINE_LM.s (now_ms() as usize);
         core::mem::swap (&mut ret, &mut status_line);
         delete_line (&mut stdout);
         let _ = stdout.flush();}}
@@ -294,13 +286,14 @@ pub fn short_log_time (ms: u64)
       use crossterm::QueueableCommand;
       use fomat_macros::{wite, fomat};
       use std::io::Write;
+      let tty = *$crate::ISATTY;
       let mut stdout = std::io::stdout();
-      let _ = stdout.queue ($command);
+      if tty {let _ = stdout.queue ($command);}
       let _ = wite! (&mut stdout,
         ($crate::short_log_time ($crate::now_ms())) ' '
         ($crate::filename (file!())) ':' (line!()) "] "
         $($args)+ '\n');
-      let _ = stdout.queue (crossterm::style::ResetColor);
+      if tty {let _ = stdout.queue (crossterm::style::ResetColor);}
       let _ = stdout.flush();})}};
 
   // https://docs.rs/crossterm/latest/crossterm/style/enum.Color.html
@@ -1135,3 +1128,47 @@ impl Hash for OrdF32 {
 impl fmt::Display for OrdF32 {
   fn fmt (&self, fm: &mut fmt::Formatter) -> fmt::Result {
     self.0.fmt (fm)}}
+
+pub trait AtBool {
+  /// load with `Ordering::Relaxed`
+  fn l (&self) -> bool;
+  /// store with `Ordering::Relaxed`
+  fn s (&self, val: bool);}
+impl AtBool for core::sync::atomic::AtomicBool {
+  fn l (&self) -> bool {
+    self.load (Ordering::Relaxed)}
+  fn s (&self, val: bool) {
+    self.store (val, Ordering::Relaxed)}}
+
+pub trait AtI32 {
+  /// load with `Ordering::Relaxed`
+  fn l (&self) -> i32;
+  /// store with `Ordering::Relaxed`
+  fn s (&self, val: i32);}
+impl AtI32 for core::sync::atomic::AtomicI32 {
+  fn l (&self) -> i32 {
+    self.load (Ordering::Relaxed)}
+  fn s (&self, val: i32) {
+    self.store (val, Ordering::Relaxed)}}
+
+pub trait AtI64 {
+  /// load with `Ordering::Relaxed`
+  fn l (&self) -> i64;
+  /// store with `Ordering::Relaxed`
+  fn s (&self, val: i64);}
+impl AtI64 for core::sync::atomic::AtomicI64 {
+  fn l (&self) -> i64 {
+    self.load (Ordering::Relaxed)}
+  fn s (&self, val: i64) {
+    self.store (val, Ordering::Relaxed)}}
+
+pub trait AtUsize {
+  /// load with `Ordering::Relaxed`
+  fn l (&self) -> usize;
+  /// store with `Ordering::Relaxed`
+  fn s (&self, val: usize);}
+impl AtUsize for AtomicUsize {
+  fn l (&self) -> usize {
+    self.load (Ordering::Relaxed)}
+  fn s (&self, val: usize) {
+    self.store (val, Ordering::Relaxed)}}
