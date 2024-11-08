@@ -25,6 +25,7 @@ lines = ["re", "winapi", "memmap2", "memchr"]
 sqlite = ["lines", "re", "reffers", "rusqlite", "smallvec", "crossterm", "chrono", "fomat-macros"]
 sync = ["fast_rsync", "gxhash"]
 link = ["fomat-macros", "gxhash", "indexmap", "inlinable_string", "serde_json"]
+ser = ["serde", "serde_json", "indexmap/serde", "inlinable_string/serde"]
 
 [dependencies]
 chrono = {version = "0.4", optional = true}

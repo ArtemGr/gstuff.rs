@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::str::from_utf8_unchecked;
 
+#[inline] pub fn b2s (b: &[u8]) -> &str {unsafe {std::str::from_utf8_unchecked (b)}}
+
 /// Grok long lines with `memchr`. Consider using
 /// [slice::Split](https://doc.rust-lang.org/nightly/std/slice/struct.Split.html)
 /// when the lines are short.
@@ -607,3 +609,34 @@ pub fn crc16ccitt_aug (mut crc: u16) -> u16 {
       let c8 = b"123456789".iter().fold (0u8, |a, &b| black_box (a.wrapping_add (b)));
       assert_eq! (0xDD, c8)})}}
 
+
+#[allow(dead_code)] #[repr(packed)] pub struct UStar {
+  pub name: [u8; 100],
+  pub mode: [u8; 8],
+  pub owner: [u8; 8],
+  pub group: [u8; 8],
+  pub size: [u8; 12],
+  pub lm: [u8; 12],
+  pub checksum: [u8; 8],
+  /// https://github.com/Distrotech/tar/blob/273975b/src/tar.h#L50
+  pub typ: u8,
+  pub lf: [u8; 100],
+  pub ustar: [u8; 6],
+  pub uv: [u8; 2],
+  pub uowner: [u8; 32],
+  pub ugroup: [u8; 32],
+  pub dmajor: [u8; 8],
+  pub dminor: [u8; 8],
+  pub name_prefix: [u8; 155],
+  pub pad: [u8; 12]}
+
+impl UStar {
+  pub fn o2u64 (mut octal: &[u8]) -> Re<u64> {
+    while !octal.is_empty() && !matches! (octal[octal.len() - 1], b'0'..=b'8') {octal = &octal[..octal.len()-1]}
+    if octal.is_empty() {return Re::Ok (0)}
+    let size = b2s (octal);
+    match u64::from_str_radix (size, 8) {
+      Ok (l) => Re::Ok (l),
+      Err (err) => fail! ("!size " [size] ": " (err))}}
+
+  pub fn size (&self) -> Re<u64> {Self::o2u64 (&self.size)}}
