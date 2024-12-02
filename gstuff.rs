@@ -1058,6 +1058,37 @@ impl<T> Drop for IniMutex<T> {
 #[cfg(feature = "inlinable_string")]
 pub static HOST: IniMutex<inlinable_string::InlinableString> = IniMutex::none();
 
+pub struct TSafe<T> (pub T);
+unsafe impl<T> Send for TSafe<T> {}
+unsafe impl<T> Sync for TSafe<T> {}
+impl<T: Default> Default for TSafe<T> {fn default() -> Self {TSafe(T::default())}}
+impl<T: Clone> Clone for TSafe<T> {fn clone (&self) -> Self {TSafe (self.0.clone())}}
+impl<T: fmt::Debug> fmt::Debug for TSafe<T> {fn fmt (&self, ft: &mut fmt::Formatter<'_>) -> fmt::Result {self.0.fmt (ft)}}
+impl<T: fmt::Display> fmt::Display for TSafe<T> {fn fmt (&self, ft: &mut fmt::Formatter<'_>) -> fmt::Result {self.0.fmt (ft)}}
+
+#[cfg(all(feature = "re"))]
+pub trait SpinA<T> {
+  /// Exclusive “write” lock. Assuming that there is but little contention, fails after spinning a while.
+  fn spinʷ (self: &Self) -> re::Re<reffers::arc::RefMut<T>>;
+  /// Shared “read” lock. Assuming that there is but little contention, fails after spinning a while.
+  fn spinʳ (self: &Self) -> re::Re<reffers::arc::Ref<T>>;}
+
+#[cfg(all(feature = "re", feature = "reffers"))]
+impl<T> SpinA<T> for reffers::arc::Strong<T> {
+  fn spinʷ (&self) -> re::Re<reffers::arc::RefMut<T>> {
+    let timeout = unsafe {SPIN_OUT};
+    for spin in 0..timeout {
+      if let Ok (lock) = self.try_get_refmut() {return re::Re::Ok (lock)}
+      if spin % 10 == 0 {spin_loop()} else {thread::yield_now()}}
+    re::Re::Err ("spin-out".into())}
+
+  fn spinʳ (&self) -> re::Re<reffers::arc::Ref<T>> {
+    let timeout = unsafe {SPIN_OUT};
+    for spin in 0..timeout {
+      if let Ok (lock) = self.try_get_ref() {return re::Re::Ok (lock)}
+      if spin % 10 == 0 {spin_loop()} else {thread::yield_now()}}
+    re::Re::Err ("spin-out".into())}}
+
 /// Helps logging binary data (particularly with text-readable parts, such as bencode, netstring)
 /// by replacing all the non-printable bytes with the `blank` character.
 pub fn binprint (bin: &[u8], blank: u8) -> String {
