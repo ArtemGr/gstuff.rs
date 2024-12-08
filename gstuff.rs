@@ -1066,7 +1066,7 @@ impl<T: Clone> Clone for TSafe<T> {fn clone (&self) -> Self {TSafe (self.0.clone
 impl<T: fmt::Debug> fmt::Debug for TSafe<T> {fn fmt (&self, ft: &mut fmt::Formatter<'_>) -> fmt::Result {self.0.fmt (ft)}}
 impl<T: fmt::Display> fmt::Display for TSafe<T> {fn fmt (&self, ft: &mut fmt::Formatter<'_>) -> fmt::Result {self.0.fmt (ft)}}
 
-#[cfg(all(feature = "re"))]
+#[cfg(all(feature = "re", feature = "reffers"))]
 pub trait SpinA<T> {
   /// Exclusive “write” lock. Assuming that there is but little contention, fails after spinning a while.
   fn spinʷ (self: &Self) -> re::Re<reffers::arc::RefMut<T>>;
@@ -1194,11 +1194,15 @@ impl AtI64 for core::sync::atomic::AtomicI64 {
     self.store (val, Ordering::Relaxed)}}
 
 pub trait AtUsize {
+  /// swap with `Ordering::Relaxed`
+  fn cas (&self, current: usize, new: usize) -> Result<usize, usize>;
   /// load with `Ordering::Relaxed`
   fn l (&self) -> usize;
   /// store with `Ordering::Relaxed`
   fn s (&self, val: usize);}
 impl AtUsize for AtomicUsize {
+  fn cas (&self, current: usize, new: usize) -> Result<usize, usize> {
+    self.compare_exchange (current, new, Ordering::Relaxed, Ordering::Relaxed)}
   fn l (&self) -> usize {
     self.load (Ordering::Relaxed)}
   fn s (&self, val: usize) {

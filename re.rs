@@ -113,6 +113,10 @@ impl<T> Re<T> {
     match self {Re::Ok (k) => k, Re::Err (_) => default}}
 
   #[inline]
+  pub fn map_err<F, O> (self, op: O) -> Result<T, F> where O: FnOnce (String) -> F {
+    match self {Re::Ok (k) => Ok (k), Re::Err (err) => Err (op (err))}}
+
+  #[inline]
   pub fn map<U, F: FnOnce (T) -> U> (self, op: F) -> Re<U> {
     match self {Re::Ok (k) => Re::Ok (op (k)), Re::Err (e) => Re::Err (e)}}}
 
