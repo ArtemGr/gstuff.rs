@@ -1,6 +1,6 @@
 [package]
 name = "gstuff"
-version = "0.8.18"
+version = "0.8.19"
 edition = "2021"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
@@ -22,7 +22,7 @@ base91 = ["smallvec"]
 rdtsc = []
 re = ["fomat-macros"]
 lines = ["re", "winapi", "memmap2", "memchr"]
-sqlite = ["lines", "re", "reffers", "rusqlite", "smallvec", "crossterm", "chrono", "fomat-macros"]
+sqlite = ["lines", "re", "reffers", "rusqlite", "smallvec", "crossterm", "inlinable_string", "fomat-macros"]
 sync = ["fast_rsync", "gxhash"]
 link = ["fomat-macros", "gxhash", "indexmap", "inlinable_string", "serde_json"]
 ser = ["serde", "serde_json", "indexmap/serde", "inlinable_string/serde"]

@@ -256,16 +256,13 @@ pub fn with_status_line (code: &dyn Fn()) {
 #[test] fn test_status_line() {
   with_status_line (&|| println! ("hello world"));}
 
-#[cfg(all(feature = "crossterm", feature = "chrono"))]
-pub fn short_log_time (ms: u64)
--> chrono::format::DelayedFormat<chrono::format::strftime::StrftimeItems<'static>> {
-  use chrono::{Local, LocalResult, TimeZone};
-  if let Some (time) = Local.timestamp_millis_opt (ms as i64) .earliest() {
-    time.format ("%d %H:%M:%S")
-  } else {
-    Local::now().format ("00 00:00:00")}}
+#[cfg(all(feature = "inlinable_string", feature = "fomat-macros"))]
+pub fn short_log_time (ms: u64) -> inlinable_string::InlinableString {
+  use fomat_macros::wite;
+  let iso = ms2iso8601 (ms as i64);
+  ifomat! ((&iso[8..10]) ' ' (&iso[11..19]))}
 
-#[cfg(all(feature = "crossterm", feature = "chrono", feature = "fomat-macros"))]
+#[cfg(all(feature = "crossterm", feature = "inlinable_string", feature = "fomat-macros"))]
 #[macro_export] macro_rules! log {
 
   (0, $($args: tt)+) => {  // (temporarily) disable
@@ -314,7 +311,7 @@ pub fn short_log_time (ms: u64)
         ($crate::filename (file!())) ':' (line!()) "] "
         $($args)+);})}};}
 
-#[cfg(all(feature = "crossterm", feature = "chrono", feature = "fomat-macros"))]
+#[cfg(all(feature = "crossterm", feature = "inlinable_string", feature = "fomat-macros"))]
 #[test] fn test_log() {
   log! ([= 2 + 2])}
 
