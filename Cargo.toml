@@ -1,6 +1,6 @@
 [package]
 name = "gstuff"
-version = "0.8.19"
+version = "0.8.20"
 edition = "2021"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 
@@ -19,7 +19,7 @@ nightly = []
 base62 = ["num-bigint", "num-traits", "smallvec"]
 base62j = ["smallvec"]
 base91 = ["smallvec"]
-rdtsc = []
+rdtsc = []  # nop
 re = ["fomat-macros"]
 lines = ["re", "winapi", "memmap2", "memchr"]
 sqlite = ["lines", "re", "reffers", "rusqlite", "smallvec", "crossterm", "inlinable_string", "fomat-macros"]

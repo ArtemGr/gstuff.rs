@@ -786,18 +786,15 @@ pub fn last_modified_sec (path: &dyn AsRef<Path>) -> Result<f64, String> {
 // Consider targeting a CPU here.
 // https://github.com/rust-lang/rust/issues/44036
 
-/// Time Stamp Counter (number of cycles).
-#[cfg(all(feature = "nightly", feature = "rdtsc"))]
-pub fn rdtsc() -> u64 {
-  // https://stackoverflow.com/a/7617612/257568
-  // https://stackoverflow.com/a/48100158/257568
-  // https://github.com/Amanieu/rfcs/blob/inline-asm/text/0000-inline-asm.md
-  unsafe {
-    let mut low: u32; let mut high: u32;
-    asm! ("rdtsc", lateout ("eax") low, lateout ("edx") high, options (nomem, nostack));
-    ((high as u64) << 32) | (low as u64)}}
+/// On `x86_64` it is Time Stamp Counter (number of cycles).  
+/// Fall backs to `SystemTime` `as_nanos` otherwise.
+#[cfg(all(target_arch="x86_64"))]
+pub fn rdtsc() -> u64 {unsafe {core::arch::x86_64::_rdtsc()}}
 
-#[cfg(all(feature = "nightly", feature = "rdtsc"))]
+#[cfg(all(not (target_arch="x86_64")))]
+pub fn rdtsc() -> u64 {SystemTime::now().duration_since (SystemTime::UNIX_EPOCH) .expect ("!now") .as_nanos()}
+
+#[cfg(all(target_arch="x86_64"))]
 #[test] fn test_rdtsc() {
   assert! (rdtsc() != rdtsc())}
 
