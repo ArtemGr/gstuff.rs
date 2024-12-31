@@ -664,13 +664,10 @@ pub fn with_hostname (visitor: &mut dyn FnMut (&[u8])) -> Result<(), std::io::Er
 ///
 /// Returns an empty `Vec` if the file is not present under the given path.
 pub fn slurp (path: &dyn AsRef<Path>) -> Vec<u8> {
-  let mut file = match fs::File::open (path) {
-    Ok (f) => f,
-    Err (ref err) if err.kind() == io::ErrorKind::NotFound => return Vec::new(),
-    Err (err) => panic! ("Can't open {:?}: {}", path.as_ref(), err)};
+  let Ok (mut file) = fs::File::open (path) else {return Vec::new()};
   let mut buf = Vec::new();
   // Might issue a `stat` / `metadata` call to reserve space in the `buf`, aka `buffer_capacity_required`
-  file.read_to_end (&mut buf) .expect ("!read");
+  if let Err (_err) = file.read_to_end (&mut buf) {return Vec::new()}
   buf}
 
 /// Runs a command in a shell, returning stderr+stdout on success.
@@ -788,13 +785,13 @@ pub fn last_modified_sec (path: &dyn AsRef<Path>) -> Result<f64, String> {
 
 /// On `x86_64` it is Time Stamp Counter (number of cycles).  
 /// Fall backs to `SystemTime` `as_nanos` otherwise.
-#[cfg(all(target_arch="x86_64"))]
+#[cfg(target_arch="x86_64")]
 pub fn rdtsc() -> u64 {unsafe {core::arch::x86_64::_rdtsc()}}
 
-#[cfg(all(not (target_arch="x86_64")))]
+#[cfg(not (target_arch="x86_64"))]
 pub fn rdtsc() -> u64 {SystemTime::now().duration_since (SystemTime::UNIX_EPOCH) .expect ("!now") .as_nanos()}
 
-#[cfg(all(target_arch="x86_64"))]
+#[cfg(target_arch="x86_64")]
 #[test] fn test_rdtsc() {
   assert! (rdtsc() != rdtsc())}
 
@@ -989,6 +986,11 @@ impl<T> IniMutex<T> {
     core::mem::forget (lock);
     drop (swap)}}}
 
+impl<T> Default for IniMutex<T> {
+  /// Defaults to `none` (no value in mutex)
+  fn default() -> Self {
+    IniMutex::none()}}
+
 #[derive (Debug)]
 pub enum LockInitErr {Lock (i8), Init (String)}
 
@@ -1154,6 +1156,25 @@ impl fmt::Display for OrdF32 {
   fn fmt (&self, fm: &mut fmt::Formatter) -> fmt::Result {
     self.0.fmt (fm)}}
 
+#[cfg(feature = "re")]
+pub fn length_coded (by: &[u8]) -> re::Re<(u64, usize)> {  // MySQLClientServerProtocol, #Elements
+  // cf. https://github.com/hunter-packages/mysql-client/blob/3d95211/sql-common/pack.c#L93, net_store_length
+  // cf. https://github.com/blackbeam/rust_mysql_common/blob/88ce581/src/io.rs#L347, read_lenenc_int
+  use fomat_macros::fomat;
+  if by.is_empty() {fail! ("!length_coded_binary: is_empty")}
+  if by[0] <= 250 {return re::Re::Ok ((by[0] as u64, 1))}
+  if by[0] == 251 {return re::Re::Ok ((0, 1))}  // NULL
+  if by[0] == 252 {  // “value of following 16-bit word”
+    if by.len() < 3 {fail! ("!length_coded_binary: incomplete 16-bit")}
+    return re::Re::Ok ((u16::from_le_bytes ([by[1], by[2]]) as u64, 3))}
+  if by[0] == 253 {  // “value of following 24-bit word”
+    if by.len() < 4 {fail! ("!length_coded_binary: incomplete 24-bit")}
+    return re::Re::Ok ((u32::from_le_bytes ([by[1], by[2], by[3], 0]) as u64, 4))}
+  if by[0] == 254 { // “value of following 64-bit word”
+    if by.len() < 9 {fail! ("!length_coded_binary: incomplete 64-bit")}
+    return re::Re::Ok ((u64::from_le_bytes ([by[1], by[2], by[3], by[4], by[5], by[6], by[7], by[8]]), 9))}
+  fail! ("!length_coded_binary: " [by[0]])}
+
 pub trait AtBool {
   /// load with `Ordering::Relaxed`
   fn l (&self) -> bool;
@@ -1166,22 +1187,30 @@ impl AtBool for core::sync::atomic::AtomicBool {
     self.store (val, Ordering::Relaxed)}}
 
 pub trait AtI32 {
+  /// swap with `Ordering::Relaxed`
+  fn cas (&self, current: i32, new: i32) -> Result<i32, i32>;
   /// load with `Ordering::Relaxed`
   fn l (&self) -> i32;
   /// store with `Ordering::Relaxed`
   fn s (&self, val: i32);}
 impl AtI32 for core::sync::atomic::AtomicI32 {
+  fn cas (&self, current: i32, new: i32) -> Result<i32, i32> {
+    self.compare_exchange (current, new, Ordering::Relaxed, Ordering::Relaxed)}
   fn l (&self) -> i32 {
     self.load (Ordering::Relaxed)}
   fn s (&self, val: i32) {
     self.store (val, Ordering::Relaxed)}}
 
 pub trait AtI64 {
+  /// swap with `Ordering::Relaxed`
+  fn cas (&self, current: i64, new: i64) -> Result<i64, i64>;
   /// load with `Ordering::Relaxed`
   fn l (&self) -> i64;
   /// store with `Ordering::Relaxed`
   fn s (&self, val: i64);}
 impl AtI64 for core::sync::atomic::AtomicI64 {
+  fn cas (&self, current: i64, new: i64) -> Result<i64, i64> {
+    self.compare_exchange (current, new, Ordering::Relaxed, Ordering::Relaxed)}
   fn l (&self) -> i64 {
     self.load (Ordering::Relaxed)}
   fn s (&self, val: i64) {
