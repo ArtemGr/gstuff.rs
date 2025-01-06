@@ -1,7 +1,7 @@
 #[cfg(unix)] use std::os::fd::RawFd;
 use core::cell::RefCell;
 use core::mem::MaybeUninit;
-use crate::fail;
+use crate::{fail, LinesIt};
 use crate::re::Re;
 use fomat_macros::{fomat, pintln};
 use memchr::{memchr, memrchr};
@@ -12,77 +12,6 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::str::from_utf8_unchecked;
-
-#[inline] pub fn b2s (b: &[u8]) -> &str {unsafe {std::str::from_utf8_unchecked (b)}}
-
-/// Grok long lines with `memchr`. Consider using
-/// [slice::Split](https://doc.rust-lang.org/nightly/std/slice/struct.Split.html)
-/// when the lines are short.
-/// 
-/// Skips blanks.
-pub struct LinesIt<'a> {
-  pub lines: &'a [u8],
-  pub head: usize,
-  pub tail: usize}
-
-impl<'a> LinesIt<'a> {
-  pub fn new (lines: &'a [u8]) -> LinesIt<'a> {
-    let (mut head, mut tail) = (0, lines.len());
-
-    loop {
-      if tail <= head {break}
-      if lines[head] == b'\n' {head += 1; continue}
-      break}
-
-    loop {
-      if tail <= head {break}
-      if lines[tail-1] == b'\n' {tail -= 1; continue}
-      break}
-
-    LinesIt {lines, head, tail}}
-
-  /// seek to a line at the given byte `pos`ition
-  pub fn heads_up (lines: &'a [u8], pos: usize) -> LinesIt<'a> {
-    let len = lines.len();
-    if len < pos {
-      LinesIt {lines, head: len, tail: len}
-    } else {
-      LinesIt {lines,
-        head: memrchr (b'\n', &lines[..pos]) .unwrap_or_default(),
-        tail: len}}}}
-
-impl<'a> Iterator for LinesIt<'a> {
-  type Item = &'a [u8];
-  fn next (&mut self) -> Option<Self::Item> {
-    loop {
-      if self.tail <= self.head {return None}
-      if self.lines[self.head] == b'\n' {self.head += 1; continue}
-      break}
-    if let Some (mut lf) = memchr (b'\n', &self.lines[self.head .. self.tail]) {
-      lf += self.head;
-      let line = &self.lines[self.head .. lf];
-      self.head = lf + 1;
-      Some (line)
-    } else {
-      let line = &self.lines[self.head .. self.tail];
-      self.head = self.tail;
-      Some (line)}}}
-
-impl<'a> DoubleEndedIterator for LinesIt<'a> {
-  fn next_back (&mut self) -> Option<Self::Item> {
-    loop {
-      if self.tail <= self.head {return None}
-      if self.lines[self.tail-1] == b'\n' {self.tail -= 1; continue}
-      break}
-    if let Some (mut lf) = memrchr (b'\n', &self.lines[self.head .. self.tail]) {
-      lf += self.head;
-      let line = &self.lines[lf + 1 .. self.tail];
-      self.tail = lf;
-      Some (line)
-    } else {
-      let line = &self.lines[self.head .. self.tail];
-      self.tail = self.head;
-      Some (line)}}}
 
 /// Unlocks on Drop
 #[cfg(not(windows))]
@@ -132,11 +61,11 @@ impl Drop for Lock {
     unsafe {
       let rc = libc::flock (self.fd, libc::LOCK_UN);
       //println! ("lines] Lock::drop] {:?}; LOCK_UN rc = {}", std::thread::current().id(), rc);
-      if rc == -1 {let _errno = *libc::__errno_location();}}}}
+      if rc == -1 {let _errno = nix::errno::Errno::last_raw();}}}}
 
 /// try to lock the file, nonblocking
 #[cfg(not(windows))]
-pub fn lock (file: &fs::File, ex: bool) -> Result<Lock, u32> {
+pub fn lock (file: &fs::File, ex: bool) -> Result<Lock, i32> {
   // https://linux.die.net/man/2/flock
 
   // To visually verify the lock:
@@ -156,7 +85,7 @@ pub fn lock (file: &fs::File, ex: bool) -> Result<Lock, u32> {
     let fd = file.as_raw_fd();
     let rc = libc::flock (fd, flags);
     // https://man7.org/linux/man-pages/man3/errno.3.html
-    if rc == -1 {Err (*libc::__errno_location() as u32)}
+    if rc == -1 {Err (nix::errno::Errno::last_raw())}
     else {Ok (Lock {fd})}}}
 
 /// File, lock and memory
@@ -278,10 +207,10 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
     r#"{"bar": 2}"#, '\n');
 
   const CSV: &'static str = concat! (
-    "foo,bar\n",
-    "foo,1\n",
-    "\n\n",  // blank lines
-    "bar,2");  // no LF at the end
+    "foo,bar\n",  // 0..8
+    "foo,1\n",  // 8..14
+    "\n\n",  // 14..16, blank lines
+    "bar,2");  // 16..21, no LF at the end
 
   #[test] fn back() {
     let mut it = LinesIt::new (JSON_LINES.as_bytes());
@@ -350,7 +279,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
   use core::marker::PhantomData;
   use core::str::from_utf8;
   use crate::lines::Re;
-  use crate::log;
+  use crate::{log, LinesIt};
   use fomat_macros::{fomat, wite};
   use rusqlite::{vtab, Connection, Error, Result};
   use rusqlite::ffi::{sqlite3_vtab, sqlite3_vtab_cursor};
@@ -358,7 +287,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
   use smallvec::SmallVec;
   use std::fmt::Write;
   use std::rc::Rc;
-  use super::{LockAndLoad, LinesIt};
+  use super::LockAndLoad;
 
   #[repr(C)]
   pub struct CsqVTab {
@@ -634,7 +563,7 @@ impl UStar {
   pub fn o2u64 (mut octal: &[u8]) -> Re<u64> {
     while !octal.is_empty() && !matches! (octal[octal.len() - 1], b'0'..=b'8') {octal = &octal[..octal.len()-1]}
     if octal.is_empty() {return Re::Ok (0)}
-    let size = b2s (octal);
+    let size = crate::b2s (octal);
     match u64::from_str_radix (size, 8) {
       Ok (l) => Re::Ok (l),
       Err (err) => fail! ("!size " [size] ": " (err))}}

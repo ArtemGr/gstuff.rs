@@ -9,6 +9,7 @@
 extern crate libc;
 #[cfg(feature = "crossterm")] extern crate crossterm;
 
+#[cfg(feature = "memchr")] use memchr::{memchr, memrchr};
 use core::any::Any;
 use core::arch::asm;
 use core::cell::UnsafeCell;
@@ -26,6 +27,8 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[inline] pub fn b2s (b: &[u8]) -> &str {unsafe {std::str::from_utf8_unchecked (b)}}
 
 /// Shortcut to path->filename conversion.
 ///
@@ -493,7 +496,7 @@ pub fn iso8601ics (iso: &[u8]) -> i64 {
               ics[10] = iso[17]; ics[11] = iso[18];
               if 22 <= iso.len() && iso[19] == b'.' {
                 ics[12] = iso[20]; ics[13] = iso[21]}}}}}}}
-  match unsafe {std::str::from_utf8_unchecked (&ics)} .parse() {Ok (k) => k, Err (_err) => 0}}
+  match b2s (&ics) .parse() {Ok (k) => k, Err (_err) => 0}}
 
 #[cfg(all(test, feature = "nightly", feature = "chrono", feature = "inlinable_string", feature = "re"))] mod time_bench {
   extern crate test;
@@ -634,7 +637,7 @@ pub fn iso8601ics (iso: &[u8]) -> i64 {
 pub fn netstring (at: &[u8]) -> Result<(&[u8], &[u8]), String> {
   let length_end = match at.iter().position (|&ch| ch < b'0' || ch > b'9') {Some (l) if l > 0 => l, _ => return ERR! ("No len.")};
   match at.get (length_end) {Some (&ch) if ch == b':' => (), _ => return ERR! ("No colon.")};
-  let length = unsafe {from_utf8_unchecked (&at[0 .. length_end])};
+  let length = b2s (&at[0 .. length_end]);
   let length: usize = try_s! (length.parse());
   let bulk_pos = 0 + length_end + 1;
   let bulk_end = bulk_pos + length;
@@ -789,7 +792,7 @@ pub fn last_modified_sec (path: &dyn AsRef<Path>) -> Result<f64, String> {
 pub fn rdtsc() -> u64 {unsafe {core::arch::x86_64::_rdtsc()}}
 
 #[cfg(not (target_arch="x86_64"))]
-pub fn rdtsc() -> u64 {SystemTime::now().duration_since (SystemTime::UNIX_EPOCH) .expect ("!now") .as_nanos()}
+pub fn rdtsc() -> u64 {SystemTime::now().duration_since (SystemTime::UNIX_EPOCH) .expect ("!now") .as_nanos() as u64}
 
 #[cfg(target_arch="x86_64")]
 #[test] fn test_rdtsc() {
@@ -1230,3 +1233,76 @@ impl AtUsize for AtomicUsize {
     self.load (Ordering::Relaxed)}
   fn s (&self, val: usize) {
     self.store (val, Ordering::Relaxed)}}
+
+/// Grok long lines with `memchr`. Consider using
+/// [slice::Split](https://doc.rust-lang.org/nightly/std/slice/struct.Split.html)
+/// when the lines are short.
+/// 
+/// Skips blanks.
+#[cfg(feature = "memchr")]
+pub struct LinesIt<'a> {
+  pub lines: &'a [u8],
+  pub head: usize,
+  pub tail: usize}
+
+#[cfg(feature = "memchr")]
+impl<'a> LinesIt<'a> {
+  pub fn new (lines: &'a [u8]) -> LinesIt<'a> {
+    let (mut head, mut tail) = (0, lines.len());
+
+    loop {
+      if tail <= head {break}
+      if lines[head] == b'\n' {head += 1; continue}
+      break}
+
+    loop {
+      if tail <= head {break}
+      if lines[tail-1] == b'\n' {tail -= 1; continue}
+      break}
+
+    LinesIt {lines, head, tail}}
+
+  /// seek to a line at the given byte `pos`ition
+  pub fn heads_up (lines: &'a [u8], pos: usize) -> LinesIt<'a> {
+    let len = lines.len();
+    if len < pos {
+      LinesIt {lines, head: len, tail: len}
+    } else {
+      LinesIt {lines,
+        head: memrchr (b'\n', &lines[..pos]) .unwrap_or_default(),
+        tail: len}}}}
+
+#[cfg(feature = "memchr")]
+impl<'a> Iterator for LinesIt<'a> {
+  type Item = &'a [u8];
+  fn next (&mut self) -> Option<Self::Item> {
+    loop {
+      if self.tail <= self.head {return None}
+      if self.lines[self.head] == b'\n' {self.head += 1; continue}
+      break}
+    if let Some (mut lf) = memchr (b'\n', &self.lines[self.head .. self.tail]) {
+      lf += self.head;
+      let line = &self.lines[self.head .. lf];
+      self.head = lf + 1;
+      Some (line)
+    } else {
+      let line = &self.lines[self.head .. self.tail];
+      self.head = self.tail;
+      Some (line)}}}
+
+#[cfg(feature = "memchr")]
+impl<'a> DoubleEndedIterator for LinesIt<'a> {
+  fn next_back (&mut self) -> Option<Self::Item> {
+    loop {
+      if self.tail <= self.head {return None}
+      if self.lines[self.tail-1] == b'\n' {self.tail -= 1; continue}
+      break}
+    if let Some (mut lf) = memrchr (b'\n', &self.lines[self.head .. self.tail]) {
+      lf += self.head;
+      let line = &self.lines[lf + 1 .. self.tail];
+      self.tail = lf;
+      Some (line)
+    } else {
+      let line = &self.lines[self.head .. self.tail];
+      self.tail = self.head;
+      Some (line)}}}
