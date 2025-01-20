@@ -268,10 +268,8 @@ pub fn short_log_time (ms: u64) -> inlinable_string::InlinableString {
 #[cfg(all(feature = "crossterm", feature = "inlinable_string", feature = "fomat-macros"))]
 #[macro_export] macro_rules! log {
 
-  (0, $($args: tt)+) => {  // (temporarily) disable
-    if 1 == 0 {log! ($($args)+)}};
-  (1, $($args: tt)+) => {  // proceed as usual
-    {log! ($($args)+)}};
+  ($on: literal, $($args: tt)+) => {  // a flip to (temporarily) disable
+    if $on & 1 == 1 {log! ($($args)+)}};
 
   (t $time: expr => $delay: expr, $($args: tt)+) => {{  // $delay repeat by $time
     static LL: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new (0);
@@ -1306,3 +1304,123 @@ impl<'a> DoubleEndedIterator for LinesIt<'a> {
       let line = &self.lines[self.head .. self.tail];
       self.tail = self.head;
       Some (line)}}}
+
+/// Pool which `join`s `thread`s on `drop`.
+#[cfg(all(feature = "reffers", feature = "re", feature = "inlinable_string"))]
+pub mod tpool {
+  use crate::{any_to_str, IniMutex};
+  use crate::re::Re;
+  use inlinable_string::InlinableString;
+  use reffers::arc::{Strong as StrongA, Ref as RefA, RefMut as RefMutA};
+  use std::collections::VecDeque;
+  use std::hint::spin_loop;
+  use std::panic::{catch_unwind, AssertUnwindSafe};
+  use std::sync::{Mutex, Condvar};
+  use std::sync::atomic::{AtomicBool, AtomicI16};
+  use std::sync::atomic::Ordering;
+  use std::thread::{self, JoinHandle};
+  use std::time::Duration;
+
+  struct TJobs {
+    queue: Mutex<VecDeque<Box<dyn FnOnce() -> Re<()> + Send + 'static>>>,
+    alarm: Condvar,
+    running: AtomicI16,
+    bye: AtomicBool}
+  impl Default for TJobs {
+    fn default() -> TJobs {
+      TJobs {
+        queue: Mutex::new (VecDeque::new()),
+        alarm: Condvar::new(),
+        running: AtomicI16::new (0),
+        bye: AtomicBool::new (false)}}}
+
+  #[derive (Default)]
+  pub struct TPool {
+    jobs: StrongA<TJobs>,
+    pub threads: Vec<(InlinableString, JoinHandle<Re<()>>)>,
+    pub finalizers: Vec<(InlinableString, Box<dyn FnOnce() -> Re<()> + Send + 'static>)>}
+
+  unsafe impl Send for TPool {}
+  unsafe impl Sync for TPool {}
+
+  impl TPool {
+    /// Add thread to pool.  
+    /// `false` if `tag` was already in thread pool.
+    pub fn sponsor (&mut self, tag: InlinableString) -> Re<bool> {
+      if self.threads.iter().any (|(tagʹ, _)| *tagʹ == tag) {return Re::Ok (false)}
+      let jobs = self.jobs.clone();
+      self.threads.push ((tag,
+        thread::Builder::new().name ("TPool".into()) .spawn (move || -> Re<()> {
+          loop {
+            let task = {
+              let jobs = jobs.get_ref();
+              let mut queue = jobs.queue.lock()?;
+              match queue.pop_front() {
+                Some (j) => {jobs.running.fetch_add (1, Ordering::Relaxed); j}
+                None if jobs.bye.load (Ordering::Relaxed) => {break Re::Ok(())}
+                None => {
+                  let (mut queue, _rc) = jobs.alarm.wait_timeout (queue, Duration::from_secs_f32 (0.31))?;
+                  if let Some (job) = queue.pop_front() {jobs.running.fetch_add (1, Ordering::Relaxed); job} else {continue}}}};
+            let rc = catch_unwind (AssertUnwindSafe (task));
+            let running = jobs.get_ref().running.fetch_sub (1, Ordering::Relaxed);
+            if running < 0 {log! (a 202, [=running])}
+            match rc {
+              Ok (Re::Ok(())) => {}
+              Ok (Re::Err (err)) => {log! (a 1, (err))}
+              Err (err) => {log! (a 1, [any_to_str (&*err)])}}}})?));
+    Re::Ok (true)}
+
+    /// Run given callback from one of `sponsor`ed threads.
+    pub fn post (&self, task: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> Re<()> {
+      let jobs = self.jobs.get_ref();
+      let mut queue = jobs.queue.lock()?;
+      queue.push_back (task);
+      jobs.alarm.notify_one();
+      Re::Ok(())}
+
+    /// Run given callback after pool threads are joined in `drop`.  
+    /// `false` if non-empty `tag` was already registered.
+    pub fn fin (&mut self, tag: InlinableString, finalizer: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> bool {
+      if !tag.is_empty() && self.finalizers.iter().any (|(tagʹ, _)| *tagʹ == tag) {false}
+      else {self.finalizers.push ((tag, finalizer)); true}}
+
+    /// Number of jobs queued or running.
+    pub fn jobsⁿ (&self) -> Re<usize> {
+      let jobs = self.jobs.get_ref();
+      let queue = jobs.queue.lock()?;
+      Re::Ok (queue.len() + jobs.running.load (Ordering::Relaxed) .max (0) as usize)}}
+
+  impl Drop for TPool {
+    fn drop (&mut self) {
+      { let jobs = self.jobs.get_ref();
+        jobs.bye.store (true, Ordering::Relaxed);
+        let _queue = jobs.queue.lock();
+        jobs.alarm.notify_all(); }  // Flash `bye`
+      for (_tag, th) in self.threads.drain (..) {
+        match th.join() {
+          Ok (Re::Ok(())) => {}
+          Ok (Re::Err (err)) => {log! (a 1, (err))}
+          Err (err) => {log! (a 1, [any_to_str (&*err)])}}}
+      for (tag, finalizer) in self.finalizers.drain (..) {
+        let rc = catch_unwind (AssertUnwindSafe (finalizer));
+        match rc {
+          Ok (Re::Ok(())) => {}
+          Ok (Re::Err (err)) => {log! (a 1, (tag) "] " (err))}
+          Err (err) => {log! (a 1, (tag) "] " [any_to_str (&*err)])}}}}}
+
+  /// Shared thread pool.
+  pub static TPOOL: IniMutex<TPool> = IniMutex::none();
+
+  /// Post `task` to shared `TPOOL` if available, or run it on current thread otherwise.  
+  /// Returns `false` if `task` was invoked directly.
+  /// * `spin` - Try to obtain `TPOOL` this many times before falling back to direct invocation of `task`.
+  /// * `threads` - Use direct invocation if there is less than the given number of threads in the pool.
+  pub fn tpost (mut spin: u32, threads: u8, task: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> Re<bool> {
+    loop {
+      spin -= 1; if spin == 0 {break}
+      let Ok (pool) = TPOOL.lock() else {spin_loop(); thread::yield_now(); continue};
+      if pool.threads.len() < threads as usize {break}
+      pool.post (task)?;
+      return Re::Ok (true)}
+    task()?;
+    Re::Ok (false)}}
