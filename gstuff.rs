@@ -964,7 +964,9 @@ impl<T> IniMutex<T> {
             re::Re::Ok (vi) => {
               *vc = MaybeUninit::new (vi);
               Ok (IniMutexGuard {lo: self})},
-            re::Re::Err (err) => Err (LockInitErr::Init (err))}},
+            re::Re::Err (err) => {
+              self.au.store (0, Ordering::Relaxed);
+              Err (LockInitErr::Init (err))}}},
         Ok (au) => Err (LockInitErr::Lock (au)),
         Err (au) => Err (LockInitErr::Lock (au))},
       Ok (au) => Err (LockInitErr::Lock (au)),
@@ -1048,6 +1050,7 @@ impl<T> Drop for IniMutexGuard<'_, T> {
 impl<T> Drop for IniMutex<T> {
   fn drop (&mut self) {
     if self.au.load (Ordering::Acquire) != 0 {
+      self.au.store (0, Ordering::Relaxed);
       let vc = unsafe {&mut *self.vc.get()};
       unsafe {vc.assume_init_drop()}}}}
 
@@ -1157,6 +1160,9 @@ impl fmt::Display for OrdF32 {
   fn fmt (&self, fm: &mut fmt::Formatter) -> fmt::Result {
     self.0.fmt (fm)}}
 
+/*⌥ consider implementing SQLite VARINTs
+https://sqlite.org/src4/doc/trunk/www/varint.wiki
+https://softwareengineering.stackexchange.com/questions/455589/sqlite-design-use-of-variable-length-integers-explain-the-design-flaw
 #[cfg(feature = "re")]
 pub fn length_coded (by: &[u8]) -> re::Re<(u64, usize)> {  // MySQLClientServerProtocol, #Elements
   // cf. https://github.com/hunter-packages/mysql-client/blob/3d95211/sql-common/pack.c#L93, net_store_length
@@ -1175,6 +1181,7 @@ pub fn length_coded (by: &[u8]) -> re::Re<(u64, usize)> {  // MySQLClientServerP
     if by.len() < 9 {fail! ("!length_coded_binary: incomplete 64-bit")}
     return re::Re::Ok ((u64::from_le_bytes ([by[1], by[2], by[3], by[4], by[5], by[6], by[7], by[8]]), 9))}
   fail! ("!length_coded_binary: " [by[0]])}
+*/
 
 pub trait AtBool {
   /// load with `Ordering::Relaxed`
@@ -1185,6 +1192,17 @@ impl AtBool for core::sync::atomic::AtomicBool {
   fn l (&self) -> bool {
     self.load (Ordering::Relaxed)}
   fn s (&self, val: bool) {
+    self.store (val, Ordering::Relaxed)}}
+
+pub trait AtI8 {
+  /// load with `Ordering::Relaxed`
+  fn l (&self) -> i8;
+  /// store with `Ordering::Relaxed`
+  fn s (&self, val: i8);}
+impl AtI8 for core::sync::atomic::AtomicI8 {
+  fn l (&self) -> i8 {
+    self.load (Ordering::Relaxed)}
+  fn s (&self, val: i8) {
     self.store (val, Ordering::Relaxed)}}
 
 pub trait AtI32 {
@@ -1306,7 +1324,7 @@ impl<'a> DoubleEndedIterator for LinesIt<'a> {
       Some (line)}}}
 
 /// Pool which `join`s `thread`s on `drop`.
-#[cfg(all(feature = "reffers", feature = "re", feature = "inlinable_string"))]
+#[cfg(all(feature = "crossterm", feature = "fomat-macros", feature = "inlinable_string", feature = "reffers", feature = "re"))]
 pub mod tpool {
   use crate::{any_to_str, IniMutex};
   use crate::re::Re;
@@ -1316,8 +1334,7 @@ pub mod tpool {
   use std::hint::spin_loop;
   use std::panic::{catch_unwind, AssertUnwindSafe};
   use std::sync::{Mutex, Condvar};
-  use std::sync::atomic::{AtomicBool, AtomicI16};
-  use std::sync::atomic::Ordering;
+  use std::sync::atomic::{AtomicBool, AtomicI16, Ordering};
   use std::thread::{self, JoinHandle};
   use std::time::Duration;
 
@@ -1368,7 +1385,7 @@ pub mod tpool {
               Ok (Re::Ok(())) => {}
               Ok (Re::Err (err)) => {log! (a 1, (err))}
               Err (err) => {log! (a 1, [any_to_str (&*err)])}}}})?));
-    Re::Ok (true)}
+      Re::Ok (true)}
 
     /// Run given callback from one of `sponsor`ed threads.
     pub fn post (&self, task: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> Re<()> {
