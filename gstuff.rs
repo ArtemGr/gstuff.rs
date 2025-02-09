@@ -921,6 +921,12 @@ pub struct IniMutexGuard<'a, T> {lo: &'a IniMutex<T>}
 unsafe impl<T: Send> Send for IniMutex<T> {}
 unsafe impl<T: Send> Sync for IniMutex<T> {}
 
+/// reset IniMutex to uninitialized on `drop`, handling initialization panics
+struct ResetTo0<'a, T> (&'a IniMutex<T>, bool);
+impl<'a, T> Drop for ResetTo0<'a, T> {
+  fn drop (&mut self) {
+    if self.1 {self.0.au.store (0, Ordering::Relaxed)}}}
+
 impl<T> IniMutex<T> {
   pub const fn none() -> IniMutex<T> {
     IniMutex {
@@ -959,13 +965,14 @@ impl<T> IniMutex<T> {
       Ok (1) => Ok (IniMutexGuard {lo: self}),
       Err (0) => match self.au.compare_exchange (0, 2, Ordering::Acquire, Ordering::Relaxed) {
         Ok (0) => {
-          let vc = unsafe {&mut *self.vc.get()}; 
+          let vc = unsafe {&mut *self.vc.get()};
+          let mut reset = ResetTo0 (self, true);
           match init() {
             re::Re::Ok (vi) => {
               *vc = MaybeUninit::new (vi);
+              reset.1 = false;
               Ok (IniMutexGuard {lo: self})},
             re::Re::Err (err) => {
-              self.au.store (0, Ordering::Relaxed);
               Err (LockInitErr::Init (err))}}},
         Ok (au) => Err (LockInitErr::Lock (au)),
         Err (au) => Err (LockInitErr::Lock (au))},
@@ -1010,7 +1017,9 @@ impl<T: Default> IniMutex<T> {
       Err (0) => match self.au.compare_exchange (0, 2, Ordering::Acquire, Ordering::Relaxed) {
         Ok (0) => {
           let vc = unsafe {&mut *self.vc.get()}; 
-          *vc = MaybeUninit::new (Default::default());
+          let mut reset = ResetTo0 (self, true);
+          *vc = MaybeUninit::new (T::default());
+          reset.1 = false;
           Ok (IniMutexGuard {lo: self})},
         Ok (au) => Err (au),
         Err (au) => Err (au)},
