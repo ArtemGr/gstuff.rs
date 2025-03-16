@@ -198,6 +198,7 @@ pub fn status_line (file: &str, line: u32, status: &str) {
   use std::collections::hash_map::DefaultHasher;
   use std::hash::Hasher;
 
+  #[allow(static_mut_refs)]
     if let Ok (mut status_line) = unsafe {STATUS_LINE.lock()} {
       let mut stdout = stdout();
       let old_hash = {let mut hasher = DefaultHasher::new(); hasher.write (status_line.as_bytes()); hasher.finish()};
@@ -225,6 +226,7 @@ pub fn status_line (file: &str, line: u32, status: &str) {
 pub fn status_line_clear() -> String {
   use io::{stdout, Write};
   let mut ret = String::new();
+  #[allow(static_mut_refs)]
   if let Ok (mut status_line) = unsafe {STATUS_LINE.lock()} {
     if *ISATTY && !status_line.is_empty() {
       let mut stdout = stdout();
@@ -242,6 +244,7 @@ pub fn with_status_line (code: &dyn Fn()) {
   use crossterm::{QueueableCommand, cursor};
   use io::{stdout, Write};
 
+  #[allow(static_mut_refs)]
   if let Ok (status_line) = unsafe {STATUS_LINE.lock()} {
     if !*ISATTY || status_line.is_empty() {
       code()
@@ -265,11 +268,19 @@ pub fn short_log_time (ms: u64) -> inlinable_string::InlinableString {
   let iso = ms2iso8601 (ms as i64);
   ifomat! ((&iso[8..10]) ' ' (&iso[11..19]))}
 
+/// Indent and count. Negative count hides `log! (1, …)` but not `log! (2, …)`.
+#[cfg(all(feature = "crossterm", feature = "inlinable_string", feature = "fomat-macros"))]
+pub static INDENT: IniMutex<(inlinable_string::InlinableString, i8)> = IniMutex::none();
+
 #[cfg(all(feature = "crossterm", feature = "inlinable_string", feature = "fomat-macros"))]
 #[macro_export] macro_rules! log {
 
   ($on: literal, $($args: tt)+) => {  // a flip to (temporarily) disable
-    if $on & 1 == 1 {log! ($($args)+)}};
+    if $on == 2 {
+      log! ($($args)+)
+    } else if $on == 1 {  // Display 1s only if indent count is positive
+      let i1 = $crate::INDENT.spin_default().1;
+      if 0 <= i1 {log! ($($args)+)}}};
 
   (t $time: expr => $delay: expr, $($args: tt)+) => {{  // $delay repeat by $time
     static LL: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new (0);
@@ -307,8 +318,10 @@ pub fn short_log_time (ms: u64) -> inlinable_string::InlinableString {
   ($($args: tt)+) => {{
     $crate::with_status_line (&|| {
       use fomat_macros::{pintln, fomat};
+      let i0 = $crate::INDENT.spin_default().0.clone();
       pintln! (
         ($crate::short_log_time ($crate::now_ms())) ' '
+        (i0)
         ($crate::filename (file!())) ':' (line!()) "] "
         $($args)+);})}};}
 
@@ -479,21 +492,21 @@ pub fn ics2ndt (ims: i64) -> re::Re<chrono::NaiveDateTime> {
 
 /// ISO 8601 shorthand “2022-12-12T12” converted into integer with centiseconds "%y%m%d%H%M%S%.2f"
 pub fn iso8601ics (iso: &[u8]) -> i64 {
-  let mut ics: [u8; 14] = *b"00000000000000";
+  let mut ics: [u8; 15] = *b"000000000000000";
   if 4 <= iso.len() {
-    ics[0] = iso[2]; ics[1] = iso[3];
+    ics[0] = iso[1]; ics[1] = iso[2]; ics[2] = iso[3];
     if 7 <= iso.len() && iso[4] == b'-' {
-      ics[2] = iso[5]; ics[3] = iso[6];
+      ics[3] = iso[5]; ics[4] = iso[6];
       if 10 <= iso.len() && iso[7] == b'-' {
-        ics[4] = iso[8]; ics[5] = iso[9];
+        ics[5] = iso[8]; ics[6] = iso[9];
         if 13 <= iso.len() && (iso[10] == b'T' || iso[10] == b' ') {
-          ics[6] = iso[11]; ics[7] = iso[12];
+          ics[7] = iso[11]; ics[8] = iso[12];
           if 16 <= iso.len() && iso[13] == b':' {
-            ics[8] = iso[14]; ics[9] = iso[15];
+            ics[9] = iso[14]; ics[10] = iso[15];
             if 19 <= iso.len() && iso[16] == b':' {
-              ics[10] = iso[17]; ics[11] = iso[18];
+              ics[11] = iso[17]; ics[12] = iso[18];
               if 22 <= iso.len() && iso[19] == b'.' {
-                ics[12] = iso[20]; ics[13] = iso[21]}}}}}}}
+                ics[13] = iso[20]; ics[14] = iso[21]}}}}}}}
   match b2s (&ics) .parse() {Ok (k) => k, Err (_err) => 0}}
 
 #[cfg(all(test, feature = "nightly", feature = "chrono", feature = "inlinable_string", feature = "re"))] mod time_bench {
@@ -536,9 +549,10 @@ pub fn iso8601ics (iso: &[u8]) -> i64 {
     assert! (24121314151698 == iso8601ics (b"2024-12-13T14:15:16.980"));
     assert! (24121314151698 == iso8601ics (b"3024-12-13T14:15:16.980Z"));
     assert! (24121314151698 == iso8601ics (b"2024-12-13T14:15:16.980-03"));
+    assert! (999121314151698 == iso8601ics (b"2999-12-13T14:15:16.980-03"));
     bm.iter (|| {
       let ics = iso8601ics (b"4321-12-23T13:14:15.987");
-      assert! (black_box (ics) == 21122313141598, "{}", ics)})}
+      assert! (black_box (ics) == 321122313141598, "{}", ics)})}
 
   #[bench] fn ms2iso8601ᵇ (bm: &mut test::Bencher) {
     let mut rng = SmallRng::seed_from_u64 (now_ms());
@@ -566,7 +580,7 @@ pub fn iso8601ics (iso: &[u8]) -> i64 {
         let cit = if cit.starts_with ('+') {&cit[1..]} else {&cit};
         let dit = ms2iso8601 (ms);
         assert! (cit == dit, "{} <> {}", cit, dit);
-        if let Some (udt) = udt.with_year (2000 + udt.year() % 100) {
+        if let Some (udt) = udt.with_year (2000 + udt.year() % 1000) {
           let ms = udt.timestamp_millis();
           let ics = ms2ics (ms);
           let udtʹ = Utc.from_utc_datetime (&ics2ndt (ics) .unwrap());
@@ -574,7 +588,7 @@ pub fn iso8601ics (iso: &[u8]) -> i64 {
           let msʹ = ics2ms (ics);
           assert! (ms == msʹ, "{} <> {}", ms, msʹ)}}
       if let Some (ldt) = Local.timestamp_millis_opt (ms) .earliest() {
-        if let Some (ldt) = ldt.with_year (2000 + ldt.year() % 100) {
+        if let Some (ldt) = ldt.with_year (2000 + ldt.year() % 1000) {
           let sdt = ifomat! ((ldt.format ("%Y-%m-%dT%H:%M:%S%.3f")));
           samples.push ((ldt, sdt))}}}
     samples}
@@ -623,8 +637,9 @@ pub fn iso8601ics (iso: &[u8]) -> i64 {
 
   #[bench] fn iso8601_ics_ms (bm: &mut test::Bencher) {bm.iter (|| {
     let ics = iso8601ics (black_box (b"4321-12-23T13:14:15"));
-    assert! (ics == 21122313141500);
-    assert! (ics2ms (black_box (ics)) == 1640265255000)})}}
+    assert! (ics == 321122313141500);
+    // new Date ('2321-12-23T13:14:15Z') .getTime() == 11107286055000
+    assert_eq! (ics2ms (black_box (ics)), 11107286055000)})}}
 
 /// Takes a netstring from the front of the slice.
 ///
@@ -797,7 +812,8 @@ pub fn rdtsc() -> u64 {SystemTime::now().duration_since (SystemTime::UNIX_EPOCH)
   assert! (rdtsc() != rdtsc())}
 
 /// Allows several threads or processes to compete for a shared resource by tracking resource ownership with a file.  
-/// If the lock file is older than `ttl_sec` then it is removed, allowing us to recover from a thread or process dying while holding the lock.
+/// If the lock file is older than `ttl_sec` then it is removed,
+/// allowing us to recover from a thread or process dying while holding the lock.
 pub struct FileLock<'a> {
   /// Filesystem path of the lock file.
   pub lock_path: &'a dyn AsRef<Path>,
@@ -810,7 +826,7 @@ impl<'a> FileLock<'a> {
   /// 
   /// No blocking. Returns `None` if the file already exists and is recent enough (= locked).
   ///
-  /// The returned structure will automatically remove the lock file when dropped.
+  /// The returned guard will automatically remove the lock file when dropped.
   /// 
   ///     let Some (lock) = FileLock::lock (&lockᵖ, 123.)? else {log! ("Locked."); return Re::Ok(())};
   ///     // ... Your code here ...
@@ -1204,11 +1220,15 @@ impl AtBool for core::sync::atomic::AtomicBool {
     self.store (val, Ordering::Relaxed)}}
 
 pub trait AtI8 {
+  /// swap with `Ordering::Relaxed`
+  fn cas (&self, current: i8, new: i8) -> Result<i8, i8>;
   /// load with `Ordering::Relaxed`
   fn l (&self) -> i8;
   /// store with `Ordering::Relaxed`
   fn s (&self, val: i8);}
 impl AtI8 for core::sync::atomic::AtomicI8 {
+  fn cas (&self, current: i8, new: i8) -> Result<i8, i8> {
+    self.compare_exchange (current, new, Ordering::Relaxed, Ordering::Relaxed)}
   fn l (&self) -> i8 {
     self.load (Ordering::Relaxed)}
   fn s (&self, val: i8) {
@@ -1242,6 +1262,21 @@ impl AtI64 for core::sync::atomic::AtomicI64 {
   fn l (&self) -> i64 {
     self.load (Ordering::Relaxed)}
   fn s (&self, val: i64) {
+    self.store (val, Ordering::Relaxed)}}
+
+pub trait AtU64 {
+  /// swap with `Ordering::Relaxed`
+  fn cas (&self, current: u64, new: u64) -> Result<u64, u64>;
+  /// load with `Ordering::Relaxed`
+  fn l (&self) -> u64;
+  /// store with `Ordering::Relaxed`
+  fn s (&self, val: u64);}
+impl AtU64 for core::sync::atomic::AtomicU64 {
+  fn cas (&self, current: u64, new: u64) -> Result<u64, u64> {
+    self.compare_exchange (current, new, Ordering::Relaxed, Ordering::Relaxed)}
+  fn l (&self) -> u64 {
+    self.load (Ordering::Relaxed)}
+  fn s (&self, val: u64) {
     self.store (val, Ordering::Relaxed)}}
 
 pub trait AtUsize {
