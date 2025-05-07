@@ -296,10 +296,12 @@ pub static INDENT: IniMutex<(inlinable_string::InlinableString, i8)> = IniMutex:
       use fomat_macros::{wite, fomat};
       use std::io::Write;
       let tty = *$crate::ISATTY;
+      let i0 = $crate::INDENT.spin_default().0.clone();
       let mut stdout = std::io::stdout();
       if tty {let _ = stdout.queue ($command);}
       let _ = wite! (&mut stdout,
         ($crate::short_log_time ($crate::now_ms())) ' '
+        (i0)
         ($crate::filename (file!())) ':' (line!()) "] "
         $($args)+ '\n');
       if tty {let _ = stdout.queue (crossterm::style::ResetColor);}
@@ -490,7 +492,8 @@ pub fn ics2ndt (ims: i64) -> re::Re<chrono::NaiveDateTime> {
 #[macro_export] macro_rules! iso8601toL {($short: expr) => {
   Local.from_local_datetime (&(DateTime::parse_from_rfc3339 (&iso8601z! ($short))?) .naive_utc()) .earliest()?}}
 
-/// ISO 8601 shorthand “2022-12-12T12” converted into integer with centiseconds "%y%m%d%H%M%S%.2f"
+/// ISO 8601 shorthand “2022-12-12T12” converted into integer with centiseconds "%y%m%d%H%M%S%.2f".  
+/// Expects `iso[0] == '2'`.
 pub fn iso8601ics (iso: &[u8]) -> i64 {
   let mut ics: [u8; 15] = *b"000000000000000";
   if 4 <= iso.len() {

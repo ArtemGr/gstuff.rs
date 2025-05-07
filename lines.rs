@@ -58,10 +58,15 @@ impl Drop for Lock {
 
   #[cfg(not(windows))]
   fn drop (&mut self) {
-    unsafe {
-      let rc = libc::flock (self.fd, libc::LOCK_UN);
-      //println! ("lines] Lock::drop] {:?}; LOCK_UN rc = {}", std::thread::current().id(), rc);
-      if rc == -1 {let _errno = nix::errno::Errno::last_raw();}}}}
+    let fls = {
+      let mut fls = MaybeUninit::<libc::flock>::zeroed();
+      unsafe {let flsp = fls.as_mut_ptr();
+        (*flsp).l_type = libc::F_UNLCK as libc::c_short;
+        (*flsp).l_whence = libc::SEEK_SET as libc::c_short;
+        fls.assume_init()}};
+    let cmd = nix::fcntl::FcntlArg::F_SETLK (&fls);
+    let rc = nix::fcntl::fcntl (self.fd, cmd);
+    debug_assert! (rc.is_ok(), "{:?}", rc)}}
 
 /// try to lock the file, nonblocking
 #[cfg(not(windows))]
@@ -79,14 +84,18 @@ pub fn lock (file: &fs::File, ex: bool) -> Result<Lock, i32> {
   // https://man7.org/linux/man-pages/man8/lsof.8.html “R for a read lock on the entire file”
 
   use std::os::unix::io::AsRawFd;
-  let mut flags = libc::LOCK_NB;
-  if ex {flags |= libc::LOCK_EX} else {flags |= libc::LOCK_SH}
-  unsafe {
+
+  let fls = {
+    let mut fls = MaybeUninit::<libc::flock>::zeroed();
+    unsafe {let flsp = fls.as_mut_ptr();
+      (*flsp).l_type = if ex {libc::F_WRLCK} else {libc::F_RDLCK} as libc::c_short;
+      (*flsp).l_whence = libc::SEEK_SET as libc::c_short;
+      fls.assume_init()}};
+  let cmd = nix::fcntl::FcntlArg::F_SETLK (&fls);  // non-blocking
     let fd = file.as_raw_fd();
-    let rc = libc::flock (fd, flags);
-    // https://man7.org/linux/man-pages/man3/errno.3.html
-    if rc == -1 {Err (nix::errno::Errno::last_raw())}
-    else {Ok (Lock {fd})}}}
+  match nix::fcntl::fcntl (fd, cmd) {
+    Ok (_) => Ok (Lock {fd}),
+    Err(e) => Err (e as i32)}}
 
 /// File, lock and memory
 pub struct LockAndLoad {
@@ -196,7 +205,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
       else if esc == 7 {push (9)}
     } else {push (code)}}}
 
-#[cfg(all(test, feature = "nightly"))] mod test {
+#[cfg(all(test, feature = "nightly"))] mod test_lines {
   extern crate test;
 
   use fomat_macros::pintln;
@@ -271,6 +280,214 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
       assert_eq! (line, expected);
       ix += 1;
       if it.lines.len() <= ix {ix = 0}})}}
+
+#[cfg(all(feature = "base62", feature = "base91", feature = "serde_json", feature = "indexmap", feature = "gxhash", feature = "sqlite"))]
+pub mod sq {
+  use core::cell::UnsafeCell;
+  use core::ffi::c_void;
+  use core::hint::spin_loop;
+  use core::mem::{transmute, ManuallyDrop};
+  use core::ptr::null;
+  use core::sync::atomic::{AtomicI64, Ordering};
+  use crate::{any_to_str, b2s, fail, log, ms2ics, AtI64, IniMutex, SpinA, TSafe, HOST};
+  use crate::base62::{base62udec, U62};
+  use crate::base91::BASE91JS;
+  use crate::lines::Dir;
+  use crate::re::Re;
+  use crate::tpool::tpost;
+  use fomat_macros::{fomat, wite};
+  use indexmap::IndexMap as IndexMapB;
+  use inlinable_string::{InlinableString, StringExt};
+  use reffers::arc::{Strong as StrongA, Ref as RefA, RefMut as RefMutA};
+  use reffers::rc1::{RefMut as RefMut1, Strong as Strong1};
+  use reffers::rc2::Strong as Strong2;
+  use rusqlite::{ffi as s3f, CachedStatement, Connection, Rows};
+  use serde_json::{self as json, json, Value as Json};
+  use smallvec::SmallVec;
+  use std::collections::VecDeque;
+  use std::fmt;
+  use std::io::{Read, Write};
+  use std::panic::{catch_unwind, AssertUnwindSafe};
+  use std::path::Path;
+  use std::sync::{Mutex, Condvar};
+  use std::sync::atomic::{AtomicBool, AtomicI16, AtomicI32};
+  use std::thread::{self, JoinHandle};
+  use std::time::Duration;
+
+  type IndexMap<K, V> = IndexMapB<K, V, gxhash::GxBuildHasher>;
+
+  #[must_use]
+  pub fn sqtune (schema: &str) -> String {fomat! (
+    "PRAGMA " (schema) ".page_size = 16384;"  // Might increase WAL overhead for small updates (at least a page per update)
+    "PRAGMA " (schema) ".auto_vacuum = INCREMENTAL;"  // vacuum explicitly
+    "PRAGMA " (schema) ".synchronous = NORMAL;"
+    "PRAGMA temp_store = MEMORY;")}
+
+  /// Invoke after `ATTACH DATABASE`
+  #[must_use]
+  pub fn sqwal (schema: &str) -> String {fomat! (
+    "PRAGMA " (schema) ".journal_mode = WAL;"
+    "PRAGMA " (schema) ".journal_size_limit = 1048576;"  // truncate unused WAL to 1 MiB
+    "PRAGMA wal_autocheckpoint = 0;")}  // checkpoints explicitly or at database close
+
+  pub fn sqdaver (db: &Connection) -> Re<u32> {
+    let s3: *mut s3f::sqlite3 = unsafe {db.handle()};
+    // https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntldataversion
+    let mut sqdaver = 0u32;
+    let rc = unsafe {s3f::sqlite3_file_control (s3, null(), s3f::SQLITE_FCNTL_DATA_VERSION, &mut sqdaver as *mut u32 as *mut c_void)};
+    if rc != 0 {fail! ("!sqdaver: " [rc])}
+    Re::Ok (sqdaver)}
+
+  pub fn quick_check (db: &Connection, path: Option<&dyn AsRef<Path>>) -> Re<()> {
+    use std::rc::Rc;
+    let mut st = db.prepare ("PRAGMA main.quick_check")?; let mut rows = st.query([])?;
+    while let Some (row) = rows.next()? {
+      let c0 = row.get_ref (0)? .as_str()?;
+      if c0 == "ok" {continue}
+      fail! (if let Some (path) = path {(path.as_ref().display()) ' '} "quick_check: " (c0))}
+    Re::Ok(())}
+
+  /// fetch `i32` at `column` from the next row, or `0` if NULL/end
+  pub fn z32 (rows: &mut Rows, column: usize) -> Re<i32> {
+    let Some (row) = rows.next()? else {return Re::Ok (0)};
+    Re::Ok (row.get::<_, Option<i32>> (column)? .unwrap_or (0))}
+
+  pub struct SqRows {
+    rows: ManuallyDrop<UnsafeCell<Rows<'static>>>,  // pImpl to `sth`
+    sth: ManuallyDrop<Strong1<CachedStatement<'static>>>,
+    db: ManuallyDrop<SConn>}
+
+  impl SqRows {
+    pub fn new (rows: Rows<'static>, sth: Strong1<CachedStatement<'static>>, db: SConn) -> SqRows {SqRows {
+      rows: ManuallyDrop::new (UnsafeCell::new (rows)),
+      sth: ManuallyDrop::new (sth),
+      db: ManuallyDrop::new (db)}}
+
+    pub fn r<'a> (&'a self) -> &'a mut Rows<'a> {
+      unsafe {transmute (&mut *self.rows.get())}}
+
+    /// fetch text at `column` from the next row, empty if NULL/end
+    pub fn is (&self, column: usize) -> Re<InlinableString> {
+      let Some (row) = self.r().next()? else {return Re::Ok (InlinableString::new())};
+      let s = row.get_ref (column)? .as_str()?;
+      Re::Ok (InlinableString::from (s))}
+
+    /// fetch text at `column` from the next row, empty if NULL/end
+    pub fn s (&self, column: usize) -> Re<String> {
+      let Some (row) = self.r().next()? else {return Re::Ok (String::new())};
+      let s = row.get_ref (column)? .as_str()?;
+      Re::Ok (String::from (s))}
+
+    /// fetch `i32` at `column` from the next row, or `0` if NULL/end
+    pub fn z32 (&self, column: usize) -> Re<i32> {
+      let Some (row) = self.r().next()? else {return Re::Ok (0)};
+      Re::Ok (row.get::<_, Option<i32>> (column)? .unwrap_or (0))}
+
+    /// fetch `i64` at `column` from the next row, or `0` if NULL/end
+    pub fn z64 (&self, column: usize) -> Re<i64> {
+      let Some (row) = self.r().next()? else {return Re::Ok (0)};
+      Re::Ok (row.get::<_, Option<i64>> (column)? .unwrap_or (0))}
+
+    /// fetch `f32` at `column` from the next row, or `NAN` if NULL/end
+    pub fn f32 (&self, column: usize) -> Re<f32> {
+      let Some (row) = self.r().next()? else {return Re::Ok (f32::NAN)};
+      Re::Ok (row.get::<_, Option<f32>> (column)? .unwrap_or (f32::NAN))}
+
+    /// fetch `f64` at `column` from the next row, or `NAN` if NULL/end
+    pub fn f64 (&self, column: usize) -> Re<f64> {
+      let Some (row) = self.r().next()? else {return Re::Ok (f64::NAN)};
+      Re::Ok (row.get::<_, Option<f64>> (column)? .unwrap_or (f64::NAN))}}
+
+  impl Drop for SqRows {
+    fn drop (&mut self) {unsafe {
+      ManuallyDrop::drop (&mut self.rows);  // Before `sth`
+      ManuallyDrop::drop (&mut self.sth);  // Before `db`
+      ManuallyDrop::drop (&mut self.db)}}}
+
+  pub fn run2rows (db: &SConn, sql: &[u8]) -> Re<SqRows> {
+    let dbʹ = db.spinʳ()?;
+    let mut st = RefMut1::new (dbʹ.0.prepare_cached (unsafe {core::str::from_utf8_unchecked (sql)})?);
+    let rs = st.query([])?;
+    Re::Ok (unsafe {SqRows::new (
+      core::mem::transmute (rs),
+      core::mem::transmute (st.get_strong()),
+      db.clone())})}
+
+  /// return `Rows` wrapped together with `Statement`
+  /// 
+  ///     let rows = sq! (db, [4 + 4], "SELECT 2 + 2, " (3 + 3) ", ?");
+  ///     let (four, six, eight): (i32, i32, i32) = rows.r().next()??.try_into()?;
+  ///     while let Some (row) = rows.r().next()? {}
+  /// 
+  /// with helpers, such as
+  /// 
+  ///     let four = sq! (db, [2 + 2], "SELECT ?1") .z32(0)?;
+  #[macro_export] macro_rules! sq {
+    ($db: expr, $params: expr, $($fq: tt)+) => {{
+      use $crate::SpinA;
+      let mut sql = smallvec::SmallVec::<[u8; 256]>::new();
+      fomat_macros::wite! (&mut sql, $($fq)+)?;
+      let dbʹ = $db.spinʷ()?;
+      let mut st = reffers::rc1::RefMut::new (dbʹ.0.prepare_cached (unsafe {core::str::from_utf8_unchecked (&sql)})?);
+      let rs = st.query ($params)?;
+      unsafe {$crate::lines::sq::SqRows::new (
+        core::mem::transmute (rs),
+        core::mem::transmute (st.get_strong()),
+        $db.clone())}}}}
+
+  #[macro_export] macro_rules! se {
+    ($db: expr, $params: expr, $($fq: tt)+) => {{
+      use $crate::SpinA;
+      let mut buf = smallvec::SmallVec::<[u8; 256]>::new();
+      fomat_macros::wite! (&mut buf, $($fq)+)?;
+      let dbʹ = $db.spinʷ()?;
+      let mut sth = dbʹ.0.prepare_cached (unsafe {core::str::from_utf8_unchecked (&buf)})?;
+      sth.execute ($params)?}};
+
+    (e $expect: expr, $db: expr, $params: expr, $($fq: tt)+) => {{
+      let expect = $expect as usize;
+      let ups = se! ($db, $params, $($fq)+);
+      if ups != expect {fail! ("ups " (ups) " <> " (expect) " expect")}}}}
+
+  /// cf. “string constant” at [literal values](https://www.sqlite.org/lang_expr.html#literal_values_constants_)
+  /// cf. [expanded_sql](https://docs.rs/rusqlite/latest/rusqlite/struct.Statement.html#method.expanded_sql)
+  #[must_use]
+  pub struct SqEsc<'a> (pub &'a str);
+  impl<'a> fmt::Display for SqEsc<'a> {
+    fn fmt (&self, ft: &mut fmt::Formatter<'_>) -> fmt::Result {
+      use fmt::Write;
+      for ch in self.0.chars() {match ch {
+        '\'' => {ft.write_char ('\'')?; ft.write_char ('\'')?},
+        _ => ft.write_char (ch)?}}
+      fmt::Result::Ok(())}}
+
+  pub fn run2js (db: &SConn, sql: &[u8]) -> Re<Vec<IndexMap<InlinableString, Json>>> {
+    let dbʹ = db.try_get_ref()?;
+    let mut st = dbʹ.0.prepare (b2s (sql))?;
+    let cols = st.column_count();
+    let mut cnames = Vec::with_capacity (cols);
+    for cx in 0 .. cols {cnames.push (InlinableString::from (st.column_name (cx)?))}
+    let mut rows = st.query([])?;
+    let mut js = Vec::new();
+    while let Some (row) = rows.next()? {
+      let mut jr = IndexMap::default();
+      for cx in 0 .. cols {
+        jr.insert (cnames[cx].clone(), match row.get_ref (cx)? {
+          rusqlite::types::ValueRef::Null => Json::Null,
+          rusqlite::types::ValueRef::Integer (i) => Json::from (i),
+          rusqlite::types::ValueRef::Real (f) => Json::from (f),
+          rusqlite::types::ValueRef::Text (t) => Json::String (unsafe {String::from_utf8_unchecked (Vec::from (t))}),
+          rusqlite::types::ValueRef::Blob (b) => {
+            let mut sb = Vec::with_capacity (b.len() * 12345 / 10000 + 1);
+            BASE91JS.encode (b, |ch| sb.push (ch));
+            Json::String (unsafe {String::from_utf8_unchecked (sb)})}});}
+      js.push (jr)}
+    Re::Ok (js)}
+
+  /// Should [prefer exclusive access](https://github.com/rusqlite/rusqlite/issues/342#issuecomment-592661330), `spinᵐ`,
+  /// unless we're using the database from a single thread anyway.
+  pub type SConn = StrongA<TSafe<rusqlite::Connection>>;
+  pub fn sconn (db: Connection) -> SConn {StrongA::new (TSafe (db))}}
 
 #[cfg(feature = "sqlite")] pub mod csq {
   // cf. https://www.sqlite.org/vtab.html, https://sqlite.org/src/file?name=ext/misc/csv.c&ci=trunk
@@ -430,35 +647,116 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
 #[cfg(all(test, feature = "nightly", feature = "sqlite"))] mod csq_bench {
   extern crate test;
 
+  use crate::lines::Re;
+  use scopeguard::defer;
+  use std::fs;
+  use std::hint::black_box;
   use std::io::Write;
   use std::rc::Rc;
 
   fn gen (name: &str, num: i32) {
-    let mut file = std::io::BufWriter::new (std::fs::File::create (name) .unwrap());
-    for i in 0..num {writeln! (&mut file, "foo,bar,{}\n", i) .unwrap()}}
+    let mut file = std::io::BufWriter::new (fs::File::create (name) .unwrap());
+    for i in 0..num {writeln! (&mut file, "foo,bar,{}", i) .unwrap()}}
+
+  #[bench] fn lock_load_rd (bm: &mut test::Bencher) {
+    #[cfg(unix)] std::env::set_current_dir ("/tmp") .unwrap();
+    gen ("lock_load_rd", 12345);
+    defer! {fs::remove_file ("lock_load_rd") .unwrap()}
+    bm.iter (|| {
+      let fl = super::LockAndLoad::rd (&"lock_load_rd", b"foo,bar,0") .unwrap();
+      assert! (123456 < fl.mmap.len())})}
+
+  #[cfg(unix)] #[test] fn lock_ex_not_rd() {
+    std::env::set_current_dir ("/tmp") .unwrap();
+    defer! {
+      fs::remove_file ("lock_ex_not_rd") .unwrap();
+      fs::remove_file ("lock_ex_not_rd.rd") .unwrap()}  // Tests the forked flag
+    let _fl = super::LockAndLoad::ex (&"lock_ex_not_rd", b"") .unwrap();  // Creates and locks the file
+    if unsafe {libc::fork()} == 0 {
+      let Re::Err (err) = super::LockAndLoad::rd (&"lock_ex_not_rd", b"") else {panic! ("rd")};
+      assert! (err.ends_with ("] 11"));  // Locked in parent
+      fs::File::create ("lock_ex_not_rd.rd") .unwrap();  // flag as tested
+      std::process::exit (0)
+    } else {
+      while !std::path::Path::new ("lock_ex_not_rd.rd") .exists() {
+        std::thread::sleep (std::time::Duration::from_secs_f32 (0.123))}}}
+
+  #[bench] fn lock_ex (bm: &mut test::Bencher) {
+    #[cfg(unix)] std::env::set_current_dir ("/tmp") .unwrap();
+    gen ("csq_bench-ex.csv", 12345);
+    defer! {fs::remove_file ("csq_bench-ex.csv") .unwrap()}
+    bm.iter (|| {
+      let file = fs::OpenOptions::new().read (true) .write (true) .create (true)
+        .open ("csq_bench-ex.csv") .unwrap();
+      let _lock = black_box (super::lock (&file, true) .unwrap());
+      #[cfg(unix)] {assert! (_lock.fd != 0)}})}
+
+  #[cfg(all(unix, test))] fn sqrm (path: &str) {
+    let _ = fs::remove_file (path);
+    let _ = fs::remove_file (format! ("{}-shm", path));
+    let _ = fs::remove_file (format! ("{}-wal", path));}
+
+  /// create and lock test SQLite database at `path`
+  #[cfg(all(unix, test))] fn sqlock (path: &str, ex: bool, flag: &str) {
+    sqrm (path);
+    let db3 = rusqlite::Connection::open (path) .unwrap();
+    db3.execute_batch (&super::sq::sqtune ("main")) .unwrap();
+    db3.execute_batch (&super::sq::sqwal ("main")) .unwrap();
+    if ex {db3.execute_batch ("PRAGMA main.locking_mode = EXCLUSIVE") .unwrap()}
+    db3.execute_batch ("CREATE TABLE t (foo, bar); INSERT INTO t VALUES (1, 2);") .unwrap();  // Locks
+    fs::File::create (flag) .unwrap();
+    std::thread::sleep (std::time::Duration::from_secs_f32 (2.345))}
+
+  /// verify that `rd` fails against EXCLUSIVE
+  #[cfg(unix)] #[test] fn lock_sq_rd() {
+    std::env::set_current_dir ("/tmp") .unwrap();
+    defer! {fs::remove_file ("lock_sq_rd.created") .unwrap(); sqrm ("lock_sq_rd.db3")}
+    if unsafe {libc::fork()} == 0 {
+      sqlock ("lock_sq_rd.db3", true, "lock_sq_rd.created"); std::process::exit (0)
+    } else {
+      while !std::path::Path::new ("lock_sq_rd.created") .exists() {
+        std::thread::sleep (std::time::Duration::from_secs_f32 (0.123))}
+      let Re::Err (err) = super::LockAndLoad::rd (&"lock_sq_rd.db3", b"") else {panic! ("rd")};
+      assert! (err.ends_with ("] 11"))}}
+
+  /// verify that `ex` fails against SHARED
+  #[cfg(unix)] #[test] fn lock_sq_ex() {
+    std::env::set_current_dir ("/tmp") .unwrap();
+    defer! {fs::remove_file ("lock_sq_ex.created") .unwrap(); sqrm ("lock_sq_ex.db3")}
+    if unsafe {libc::fork()} == 0 {
+      sqlock ("lock_sq_ex.db3", false, "lock_sq_ex.created"); std::process::exit (0)
+    } else {
+      while !std::path::Path::new ("lock_sq_ex.created") .exists() {
+        std::thread::sleep (std::time::Duration::from_secs_f32 (0.123))}
+      let Re::Err (err) = super::LockAndLoad::ex (&"lock_sq_ex.db3", b"") else {panic! ("ex")};
+      assert! (err.ends_with ("] 11"))}}
 
   #[bench] fn csq_open (bm: &mut test::Bencher) {
+    #[cfg(unix)] std::env::set_current_dir ("/tmp") .unwrap();
     gen ("foobar1.csv", 12345);
+    defer! {fs::remove_file (&"foobar1.csv") .unwrap()}
     bm.iter (|| {
       let db = rusqlite::Connection::open_in_memory().unwrap();
       super::csq::csq_load (&db) .unwrap();
-      db.execute_batch ("CREATE VIRTUAL TABLE vt USING csq (path=foobar1.csv)") .unwrap()});
-    std::fs::remove_file ("foobar1.csv") .unwrap()}
+      db.execute_batch ("CREATE VIRTUAL TABLE vt USING csq (path=foobar1.csv)") .unwrap()})}
 
   #[bench] fn csq_select_one (bm: &mut test::Bencher) {
+    #[cfg(unix)] std::env::set_current_dir ("/tmp") .unwrap();
     let db = rusqlite::Connection::open_in_memory().unwrap();
     super::csq::csq_load (&db) .unwrap();
     gen ("foobar2.csv", 12345);
+    defer! {fs::remove_file ("foobar2.csv") .unwrap()}
     db.execute_batch ("CREATE VIRTUAL TABLE vt USING csq (path=foobar2.csv)") .unwrap();
     let mut st = db.prepare ("SELECT * FROM vt LIMIT 1") .unwrap();
     bm.iter (|| {
-      assert! (st.query_row ([], |row| Ok (row.get::<_, Rc<str>> (2) .unwrap().as_ref() == "1")) .unwrap())});
-    std::fs::remove_file ("foobar2.csv") .unwrap()}
+      assert! (st.query_row ([], |row| Ok (row.get::<_, Rc<str>> (2) .unwrap().as_ref() == "1")) .unwrap())})}
 
   #[bench] fn csq_next (bm: &mut test::Bencher) {
+    #[cfg(unix)] std::env::set_current_dir ("/tmp") .unwrap();
     let db = rusqlite::Connection::open_in_memory().unwrap();
     super::csq::csq_load (&db) .unwrap();
     gen ("foobar3.csv", 12345);
+    defer! {fs::remove_file ("foobar3.csv") .unwrap()}
     db.execute_batch ("CREATE VIRTUAL TABLE vt USING csq (path=foobar3.csv)") .unwrap();
     let st = Box::into_raw (Box::new (db.prepare ("SELECT * FROM vt") .unwrap()));
     let mut rows = Box::into_raw (Box::new (unsafe {(*st).query ([]) .unwrap()}));
@@ -476,8 +774,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
         i += 1
       } else {
         i = 0}});
-    unsafe {drop (Box::from_raw (st))};
-    std::fs::remove_file ("foobar3.csv") .unwrap()}}
+    unsafe {drop (Box::from_raw (st))}}}
 
 pub fn crc16ccitt (mut crc: u16, ch: u8) -> u16 {
   let mut v = 0x80u16;
@@ -537,6 +834,133 @@ pub fn crc16ccitt_aug (mut crc: u16) -> u16 {
     bm.iter (|| {
       let c8 = b"123456789".iter().fold (0u8, |a, &b| black_box (a.wrapping_add (b)));
       assert_eq! (0xDD, c8)})}}
+
+#[derive (Clone, Debug, Default)]
+pub struct Stat {
+  pub len: i64,
+  /// Last-modified in centiseconds
+  pub lmc: u64,
+  pub dir: bool}
+
+#[cfg(unix)] pub fn fstat (fd: RawFd) -> Re<Stat> {
+  let mut buf: libc::stat = unsafe {MaybeUninit::zeroed().assume_init()};
+  let rc = unsafe {libc::fstat (fd, &mut buf)};
+  if rc == -1 {fail! ((io::Error::last_os_error()))}
+  let lmc = (buf.st_mtime as u64 * 100) + (buf.st_mtime_nsec / 10000000) as u64;
+  let dir = buf.st_mode & libc::S_IFMT == libc::S_IFDIR;
+  Re::Ok (Stat {len: buf.st_size as i64, lmc, dir})}
+
+#[cfg(unix)] pub struct Dir {
+  pub fd: RawFd,
+  dir: RefCell<*mut libc::DIR>}
+
+#[cfg(unix)] impl Dir {
+  pub fn new (path: &dyn AsRef<Path>) -> Re<Dir> {
+    let path = ffi::CString::new (path.as_ref().to_str()?)?;
+    let flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOCTTY | libc::O_NOATIME;
+    // https://man7.org/linux/man-pages/man2/open.2.html
+    let fd = unsafe {libc::open (path.as_ptr(), flags, 0)};
+    if fd == -1 {fail! ((io::Error::last_os_error()))}
+    Re::Ok (Dir {fd, dir: RefCell::new (null_mut())})}
+
+  pub fn list (&self, cb: &mut dyn FnMut (&[u8]) -> Re<bool>) -> Re<()> {
+    if self.dir.borrow().is_null() {
+      // https://man7.org/linux/man-pages/man3/opendir.3.html
+      let dir = unsafe {libc::fdopendir (self.fd)};
+      if dir.is_null() {fail! ((io::Error::last_os_error()))}
+      self.dir.replace (dir);
+    } else {
+      unsafe {libc::rewinddir (*self.dir.borrow())}}
+    loop {
+      // https://linux.die.net/man/3/readdir
+      // https://pubs.opengroup.org/onlinepubs/9699919799/functions/readdir.html
+      let dp = unsafe {libc::readdir (*self.dir.borrow())};
+      if dp.is_null() {break}
+      let name = unsafe {ffi::CStr::from_ptr ((*dp).d_name.as_ptr())};
+      let name = name.to_bytes();
+      if name == b"." || name == b".." {continue}
+      if !cb (name)? {break}}
+    Re::Ok(())}
+
+  pub fn file (&self, name: &[u8], creat: bool, append: bool) -> Re<fs::File> {
+    use std::os::fd::FromRawFd;
+    let mut flags = libc::O_RDWR | libc::O_CLOEXEC | libc::O_NOCTTY | libc::O_NOATIME;
+    if creat {flags |= libc::O_CREAT}
+    if append {flags |= libc::O_APPEND}
+    let cname = ffi::CString::new (name)?;
+    // https://linux.die.net/man/2/openat
+    // https://man.freebsd.org/cgi/man.cgi?query=openat
+    // https://pubs.opengroup.org/onlinepubs/9699919799/functions/open.html
+    let fd = unsafe {libc::openat (self.fd, cname.as_ptr(), flags, 0o0600)};
+    if fd == -1 {fail! ((String::from_utf8_lossy (name)) "] " (io::Error::last_os_error()))}
+    Re::Ok (unsafe {fs::File::from_raw_fd (fd)})}
+
+  pub fn stat (&self, name: &[u8]) -> Re<Option<Stat>> {
+    let cname = ffi::CString::new (name)?;
+    let mut buf: libc::stat = unsafe {MaybeUninit::zeroed().assume_init()};
+    // https://pubs.opengroup.org/onlinepubs/9699919799/functions/fstatat.html
+    let rc = unsafe {libc::fstatat (self.fd, cname.as_ptr(), &mut buf, 0)};
+    if rc == -1 {
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::NotFound {return Re::Ok (None)}
+      fail! ((io::Error::last_os_error()))}
+
+    if buf.st_mtime < 946684800 || 1799999999 < buf.st_mtime {
+      let mut fi = fs::OpenOptions::new().create (true) .append (true) .open ("/home/artem/zebra/vm2ws/stat.log")?;
+      writeln! (&mut fi, "lines:{}] {:?}, {:?}", line!(), crate::b2s (name), buf)?}
+
+    let lmc = (buf.st_mtime as u64 * 100) + (buf.st_mtime_nsec / 10000000) as u64;
+    let dir = buf.st_mode & libc::S_IFMT == libc::S_IFDIR;
+    Re::Ok (Some (Stat {len: buf.st_size as i64, lmc, dir}))}
+
+  /// On some filesystems, `unlink`ing during a `list` can skip,
+  /// [cf.](https://stackoverflow.com/a/14454310/257568)
+  pub fn unlink (&self, name: &[u8], dir: bool) -> Re<()> {
+    let cname = ffi::CString::new (name)?;
+    let flags = if dir {libc::AT_REMOVEDIR} else {0};
+    // https://linux.die.net/man/2/unlinkat
+    // https://man.freebsd.org/cgi/man.cgi?query=unlinkat
+    // https://pubs.opengroup.org/onlinepubs/9699919799/functions/unlinkat.html
+    let rc = unsafe {libc::unlinkat (self.fd, cname.as_ptr(), flags)};
+    if rc == -1 {fail! ((io::Error::last_os_error()))}
+    Re::Ok(())}}
+
+#[cfg(unix)] impl Drop for Dir {
+  fn drop (&mut self) {
+    let dir = self.dir.borrow_mut();
+    if dir.is_null() {
+      unsafe {libc::close (self.fd);}
+    } else {
+      unsafe {libc::closedir (*dir);}}}}
+
+#[cfg(not(unix))] pub struct Dir {
+  _path: PathBuf}
+
+#[cfg(not(unix))] impl Dir {
+  pub fn new (path: &dyn AsRef<Path>) -> Re<Dir> {
+    Re::Ok (Dir {_path: path.as_ref().to_path_buf()})}
+
+  /// `dir.list (&mut |nm| {log! ((b2s (nm))); Re::Ok (true)})?;`
+  pub fn list (&self, _cb: &mut dyn FnMut (&[u8]) -> Re<bool>) -> Re<()> {
+    fail! ("tbd")}
+
+  /// Open a file in the directory.
+  /// 
+  /// * `creat` - Make a new file if one does not exists. O_CREAT
+  /// * `append` - Seek to end before each `write`. O_APPEND
+  pub fn file (&self, _name: &[u8], _creat: bool, _append: bool) -> Re<fs::File> {
+    fail! ("tbd")}
+
+  pub fn stat (&self, _name: &[u8]) -> Re<Option<Stat>> {
+    fail! ("tbd")}
+
+  /// On some filesystems, `unlink`ing during a `list` can skip,
+  /// [cf.](https://stackoverflow.com/a/14454310/257568)
+  pub fn unlink (&self, _name: &[u8], _dir: bool) -> Re<()> {
+    fail! ("tbd")}}
+
+unsafe impl Send for Dir {}
+unsafe impl Sync for Dir {}
 
 
 #[allow(dead_code)] #[repr(packed)] pub struct UStar {
