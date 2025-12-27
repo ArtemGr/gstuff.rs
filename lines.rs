@@ -92,7 +92,7 @@ pub fn lock (file: &fs::File, ex: bool) -> Result<Lock, i32> {
       (*flsp).l_whence = libc::SEEK_SET as libc::c_short;
       fls.assume_init()}};
   let cmd = nix::fcntl::FcntlArg::F_SETLK (&fls);  // non-blocking
-    let fd = file.as_raw_fd();
+  let fd = file.as_raw_fd();
   match nix::fcntl::fcntl (fd, cmd) {
     Ok (_) => Ok (Lock {fd}),
     Err(e) => Err (e as i32)}}
@@ -141,13 +141,47 @@ impl LockAndLoad {
     self.bulk().split (|ch| *ch == b'\n') .filter (|l| !l.is_empty())}
 
   /// iterate with `memchr`
-  pub fn iter (&self) -> LinesIt {
+  pub fn iter (&self) -> LinesIt<'_> {
     let bulk = self.bulk();
     LinesIt {lines: bulk, head: 0, tail: bulk.len()}}
 
   /// seek to a line at the given byte `pos`ition
-  pub fn heads_up (&self, pos: usize) -> LinesIt {
-    LinesIt::heads_up (self.bulk(), pos)}}
+  pub fn heads_up (&self, pos: usize) -> LinesIt<'_> {
+    LinesIt::heads_up (self.bulk(), pos)}
+
+  #[cfg(unix)]
+  fn write_at (&self, buf: &[u8], offset: u64) -> io::Result<usize> {
+    use std::os::unix::fs::FileExt;
+    self.file.write_at (buf, offset)}
+
+  #[cfg(windows)]
+  fn write_at (&self, buf: &[u8], offset: u64) -> io::Result<usize> {
+    use std::os::windows::fs::FileExt;
+    self.file.seek_write (buf, offset)}
+
+  pub fn overwrite_changed (&self, fidat: &[u8]) -> Re<(u32, u32)> {
+    if self.mmap.len() < fidat.len() {self.file.set_len (fidat.len() as u64)?}
+    let (mut changes, mut blocks) = (0u32, 0u32);
+    let mut chain_start: Option<usize> = None;
+
+    for off in (0..fidat.len()) .step_by (4096) {
+      blocks += 1;
+      let len = 4096.min (fidat.len() - off);
+      let new_blk = &fidat[off..off + len];
+      let old_len = len.min (self.mmap.len().saturating_sub (off));
+      let old_blk = &self.mmap[off..off + old_len];
+
+      if old_len != len || new_blk != old_blk {
+        changes += 1;
+        if chain_start.is_none() {chain_start = Some (off)}
+      } else if let Some (start) = chain_start.take() {
+        self.write_at (&fidat[start..off], start as u64)?;}}
+
+    if let Some (start) = chain_start {
+      self.write_at (&fidat[start..], start as u64)?;}
+
+    if fidat.len() < self.mmap.len() {self.file.set_len (fidat.len() as u64)?}
+    Re::Ok ((changes, blocks))}}
 
 /// escape 1, 9 (tab), 10 (lf), 13 (cr), 34 (double quote)
 /// 
@@ -416,12 +450,15 @@ pub mod sq {
   /// return `Rows` wrapped together with `Statement`
   /// 
   ///     let rows = sq! (db, [4 + 4], "SELECT 2 + 2, " (3 + 3) ", ?");
-  ///     let (four, six, eight): (i32, i32, i32) = rows.r().next()??.try_into()?;
-  ///     while let Some (row) = rows.r().next()? {}
+  ///     let (four, six, eight): (u32, u64, i32) = rows.r().next()??.try_into()?;
+  ///     let (f, s, e) = if let Some (row) = rows.r().next()? {row.try_into()?} else {(0u32, 0u64, 0)};
+  ///     while let Some (row) = rows.r().next()? {let (f, s, e): (u32, u64, i32) = row.try_into()?;}
   /// 
   /// with helpers, such as
   /// 
   ///     let four = sq! (db, [2 + 2], "SELECT ?1") .z32(0)?;
+  /// 
+  /// NB: Row is a singleton in SQLite, only use one before fetching another.
   #[macro_export] macro_rules! sq {
     ($db: expr, $params: expr, $($fq: tt)+) => {{
       use $crate::SpinA;
@@ -488,7 +525,7 @@ pub mod sq {
   /// unless we're using the database from a single thread anyway.
   pub type SConn = StrongA<TSafe<rusqlite::Connection>>;
   pub fn sconn (db: Connection) -> SConn {StrongA::new (TSafe (db))}}
-
+//dai//
 #[cfg(feature = "sqlite")] pub mod csq {
   // cf. https://www.sqlite.org/vtab.html, https://sqlite.org/src/file?name=ext/misc/csv.c&ci=trunk
 
@@ -524,7 +561,7 @@ pub mod sq {
   //  fn vtab (&self) -> &CsvVTab {unsafe {&*(self.base.pVtab as *const CsvVTab)}}}
 
   unsafe impl vtab::VTabCursor for CsvVTabCursor<'_> {
-    fn filter (&mut self, _idx_num: c_int, _idx_str: Option<&str>, _args: &vtab::Values<'_>) -> Result<()> {
+    fn filter (&mut self, _idx_num: c_int, _idx_str: Option<&str>, _args: &vtab::Filters<'_>) -> Result<()> {
       // “When initially opened, the cursor is in an undefined state.
       // The SQLite core will invoke the xFilter method on the cursor
       // prior to any attempt to position or read from the cursor.”
@@ -840,7 +877,8 @@ pub struct Stat {
   pub len: i64,
   /// Last-modified in centiseconds
   pub lmc: u64,
-  pub dir: bool}
+  pub dir: bool,
+  pub link: bool}
 
 #[cfg(unix)] pub fn fstat (fd: RawFd) -> Re<Stat> {
   let mut buf: libc::stat = unsafe {MaybeUninit::zeroed().assume_init()};
@@ -848,18 +886,21 @@ pub struct Stat {
   if rc == -1 {fail! ((io::Error::last_os_error()))}
   let lmc = (buf.st_mtime as u64 * 100) + (buf.st_mtime_nsec / 10000000) as u64;
   let dir = buf.st_mode & libc::S_IFMT == libc::S_IFDIR;
-  Re::Ok (Stat {len: buf.st_size as i64, lmc, dir})}
+  let link = buf.st_mode & libc::S_IFMT == libc::S_IFLNK;
+  Re::Ok (Stat {len: buf.st_size as i64, lmc, dir, link})}
 
 #[cfg(unix)] pub struct Dir {
   pub fd: RawFd,
   dir: RefCell<*mut libc::DIR>}
 
 #[cfg(unix)] impl Dir {
-  pub fn new (path: &dyn AsRef<Path>) -> Re<Dir> {
+  pub fn new (path: &dyn AsRef<Path>, flags: i8) -> Re<Dir> {
     let path = ffi::CString::new (path.as_ref().to_str()?)?;
-    let flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOCTTY | libc::O_NOATIME;
+    let mut fl = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOCTTY;
+    // Processes lacking CAP_FOWNER cannot bypass ownership checks for O_NOATIME
+    if flags & 0b1 == 0 {fl |= libc::O_NOATIME}
     // https://man7.org/linux/man-pages/man2/open.2.html
-    let fd = unsafe {libc::open (path.as_ptr(), flags, 0)};
+    let fd = unsafe {libc::open (path.as_ptr(), fl, 0)};
     if fd == -1 {fail! ((io::Error::last_os_error()))}
     Re::Ok (Dir {fd, dir: RefCell::new (null_mut())})}
 
@@ -899,19 +940,18 @@ pub struct Stat {
     let cname = ffi::CString::new (name)?;
     let mut buf: libc::stat = unsafe {MaybeUninit::zeroed().assume_init()};
     // https://pubs.opengroup.org/onlinepubs/9699919799/functions/fstatat.html
-    let rc = unsafe {libc::fstatat (self.fd, cname.as_ptr(), &mut buf, 0)};
+    let rc = unsafe {libc::fstatat (self.fd, cname.as_ptr(), &mut buf, libc::AT_SYMLINK_NOFOLLOW)};
     if rc == -1 {
       let err = io::Error::last_os_error();
       if err.kind() == io::ErrorKind::NotFound {return Re::Ok (None)}
       fail! ((io::Error::last_os_error()))}
 
-    if buf.st_mtime < 946684800 || 1799999999 < buf.st_mtime {
-      let mut fi = fs::OpenOptions::new().create (true) .append (true) .open ("/home/artem/zebra/vm2ws/stat.log")?;
-      writeln! (&mut fi, "lines:{}] {:?}, {:?}", line!(), crate::b2s (name), buf)?}
-
+    // NB: `st_mtime` might be zero when a file was unpacked from a non-preserving archive
+    // (seen it grow negative with a buggy Syncthing)
     let lmc = (buf.st_mtime as u64 * 100) + (buf.st_mtime_nsec / 10000000) as u64;
     let dir = buf.st_mode & libc::S_IFMT == libc::S_IFDIR;
-    Re::Ok (Some (Stat {len: buf.st_size as i64, lmc, dir}))}
+    let link = buf.st_mode & libc::S_IFMT == libc::S_IFLNK;
+    Re::Ok (Some (Stat {len: buf.st_size as i64, lmc, dir, link}))}
 
   /// On some filesystems, `unlink`ing during a `list` can skip,
   /// [cf.](https://stackoverflow.com/a/14454310/257568)
@@ -937,7 +977,7 @@ pub struct Stat {
   _path: PathBuf}
 
 #[cfg(not(unix))] impl Dir {
-  pub fn new (path: &dyn AsRef<Path>) -> Re<Dir> {
+  pub fn new (path: &dyn AsRef<Path>, _flags: i8) -> Re<Dir> {
     Re::Ok (Dir {_path: path.as_ref().to_path_buf()})}
 
   /// `dir.list (&mut |nm| {log! ((b2s (nm))); Re::Ok (true)})?;`
@@ -962,6 +1002,170 @@ pub struct Stat {
 unsafe impl Send for Dir {}
 unsafe impl Sync for Dir {}
 
+//⌥ synchronization is likely too specific and heavy in dependencies to be kept here,
+// like when we'd use tailscale for a second port to a host, - should move the code to alib
+//⌥ there are also contextual optimizations (zsync in network.md) making one-size-fits-all solution unlikely
+
+#[cfg(feature = "sync")]
+pub mod sync {
+  use core::str::from_utf8;
+  use crate::{fail, slurp, now_ms};
+  use crate::lines::{lock, Dir, Lock};
+  use crate::re::Re;
+  use fast_rsync::{Signature, SignatureOptions};
+  use fomat_macros::fomat;
+  use indexmap::IndexMap as IndexMapB;
+  use indexmap::map::Entry;
+  use inlinable_string::{InlinableString, StringExt};
+  use serde::{Deserialize, Serialize};
+  use std::fs;
+  use std::io::{self, Read, Write, Seek};
+  use std::path::Path;
+  use std::time::{Duration, UNIX_EPOCH};
+
+  type IndexMap<K, V> = IndexMapB<K, V, gxhash::GxBuildHasher>;
+
+  #[derive (Clone, Debug)]
+  pub struct File {
+    pub hosts: InlinableString,
+    pub dir: InlinableString,
+    pub name: InlinableString}
+
+  pub fn parse_files (csv: &[u8]) -> Re<Vec<File>> {
+    let mut files = Vec::new();
+    for (line, lx) in csv.split (|ch| *ch == b'\n') .zip (0..) {
+      if lx == 0 {if line != b"hosts,dir,name" {fail! ("!head")} continue}
+      if line.is_empty() {continue}
+      let (mut hosts, mut dir, mut name) = (InlinableString::new(), InlinableString::new(), InlinableString::new());
+      for (col, cx) in line.split (|ch| *ch == b',') .zip (0..) {
+        if cx == 0 {hosts = InlinableString::from (from_utf8 (col.into())?)
+        } else if cx == 1 {dir = InlinableString::from (from_utf8 (col.into())?)
+        } else if cx == 2 {name = InlinableString::from (from_utf8 (col.into())?)
+        } else {fail! ([=cx])}}
+      files.push (File {hosts, dir, name})}
+    Re::Ok (files)}
+
+  #[derive (Default)]
+  pub struct State {
+    pub files: Vec<File>,
+    pub fds: IndexMap<u16, fs::File>,
+    pub locks: IndexMap<u16, (Lock, u32, Vec<u8>)>,
+    pub dirs: IndexMap<InlinableString, Dir>}
+
+  #[derive (Debug, Deserialize, Serialize)]
+  pub enum Req {
+    RsyncProto1 {
+      fx: u16,
+      flen: u32,
+      lm: u64,
+      ofs: u32,
+      sig: Vec<u8>}}
+
+  #[derive (Debug, Deserialize, Serialize)]
+  pub enum Rep {
+    RsyncProto1 {
+      fx: u16,
+      lm: u64,
+      ofs: u32,
+      delta: Vec<u8>,
+      dlen: u32,
+      bsum: u16}}
+
+  /// Aims to reduce the cost of frequent or periodic updates, also large append-only rotating updates.
+  /// For small and infrequent updates, or directories, a different method might work.
+  pub fn rsync_pull (reqs: &mut Vec<Req>, hostname: &str, state: &mut State, name: &str, tail: i32, block: u16, hash: u8) -> Re<()> {
+    //⌥ first request should compare length and time,
+    //  and only when they differ should we lock the file, put length and time in `state`,
+    //  compute the Signature and request rsync update
+    //⌥ should only lock the file when we have found it to be different by size/time,
+    //  and making a second request with the Signature,
+    //  in order not to lock during long poll
+    //  (and Signature requests should always be served immediately)
+    //⌥ consider caching the actual bytes of the file in the State,
+    //  so that even if someone writes while we wait, we would restore a pristine copy
+    //⌥ consider making the tail mode a norm: build the Signature from a given offset,
+    //  0 for whole file
+    let (file, fx) = {let mut it = state.files.iter().zip (0u16..); 'file: loop {
+      let Some ((file, fx)) = it.next() else {fail! ("!file")};
+      if file.name != name {continue}
+      for host in file.hosts.split ('&') {
+        if host == hostname {break 'file (file, fx)}}}};
+
+    let fd = match state.fds.entry (fx) {
+      Entry::Vacant (ve) => {
+        let path = Path::new (&file.dir[..]) .join (name);
+        ve.insert (fs::OpenOptions::new() .read (true) .write (true) .create (true) .open (&path)?)},
+      Entry::Occupied (oe) => oe.into_mut()};
+
+    let (_lock, ofs, bytes) = match state.locks.entry (fx) {
+      Entry::Vacant (ve) => {
+        let Ok (lock) = lock (fd, true) else {fail! ("!lock: " (name))};
+        ve.insert ((lock, 0, Vec::new()))},
+      Entry::Occupied (oe) => oe.into_mut()};
+
+    let meta = fd.metadata()?;
+    let flen = meta.len();
+    if (u32::MAX as u64) < flen {fail! ("!u32: " [=flen])}
+    let flen = flen as u32;
+    let lm = (meta.modified()?.duration_since (UNIX_EPOCH)? .as_millis() / 10) as u64;
+
+    *ofs = if tail < 0 {
+      0 .max (flen as i32 + tail) as u32
+    } else if 0 < tail {
+      if tail < flen as i32 {0} else {tail as u32}
+    } else {0};
+
+    let pos = fd.seek (io::SeekFrom::Start (*ofs as u64))?;
+    if pos != *ofs as u64 {fail! ("!seek " [=ofs] ' ' [=pos])}
+    bytes.clear();
+    bytes.reserve_exact ((flen as u64 - *ofs as u64) as usize);
+    fd.read_to_end (bytes)?;
+
+    let sig = Signature::calculate (&bytes, SignatureOptions {
+      block_size: block as u32,
+      crypto_hash_size: hash as u32});
+    reqs.push (Req::RsyncProto1 {fx, flen, lm, ofs: *ofs, sig: sig.into_serialized()});
+
+    Re::Ok(())}
+
+  pub fn handle (reps: &[Rep], hostname: &str, state: &mut State) -> Re<()> {
+    for rep in reps {match rep {
+      Rep::RsyncProto1 {fx, lm, ofs, delta, dlen, bsum:_} => {
+        //crate::log! ([=fx] ' ' [=ofs] ' ' [=delta.len()] ' ' [=bsum]);
+        let file = &state.files[*fx as usize];
+        if !file.hosts.split ('&') .any (|h| h == hostname) {fail! ("!hosts")}
+        let Some ((lock, ofs0, mut bytes)) = state.locks.swap_remove (fx) else {fail! ("!lock: " (file.name))};
+        let Some (fd) = state.fds.get_mut (fx) else {fail! ("!fd: " (file.name))};
+        if *ofs != ofs0 && ofs0 != 0 {bytes.clear()}  // offset is off, start from scratch
+        let mut buf = Vec::with_capacity (*dlen as usize);
+        fast_rsync::apply_limited (&bytes, &delta, &mut buf, *dlen as usize)?;
+        //let bsumʹ = crc16u8 (0xFFFF, &buf);
+        //if bsumʹ != *bsum {fail! ("!bsum: " {"{:04X}", bsum} " <> " {"{:04X}", bsumʹ})}
+        //⌥ if `tail` was negative, or smaller than the local length of the file,
+        //   then we've included a bit of our local tail in the signature,
+        //   expecting that bit to match the server side bit for bit..
+        //   here we shall check if the prefix of the received `buf` matches the existing `tail`..
+        //   if nots, then the server file was modified in place and we ought to REPEAT
+        //   the pull without the `tail`
+        //⌥ for the sake of performance, and in order not to wear the disk,
+        //   shall see how many bytes at the beginning of `bytes` and `buf` are the same
+        //   and skip them (by cutting bytes and buf, and incrementing ofs)
+        /*
+        --- phind -------
+        let common_prefix_len = bytes.iter().zip(buf.iter()).take_while(|(a, b)| a == b).count();
+        */
+        let lm = UNIX_EPOCH + Duration::from_millis (*lm * 10);
+        if bytes == buf {  // skip the write if the data is already in place
+          fd.set_modified (lm)?;
+        } else {
+          let pos = fd.seek (io::SeekFrom::Start (*ofs as u64))?;
+          if pos != *ofs as u64 {fail! ("!seek " [=ofs] ' ' [=pos])}
+          fd.write_all (&buf)?;
+          fd.set_len (*ofs as u64 + buf.len() as u64)?;
+          fd.set_modified (lm)?;}
+        drop (lock);}}}
+
+    Re::Ok(())}}
 
 #[allow(dead_code)] #[repr(packed)] pub struct UStar {
   pub name: [u8; 100],
@@ -969,7 +1173,7 @@ unsafe impl Sync for Dir {}
   pub owner: [u8; 8],
   pub group: [u8; 8],
   pub size: [u8; 12],
-  pub lm: [u8; 12],
+  pub lm: [u8; 12],  // Leaving empty might produce st_mtime=0 files.
   pub checksum: [u8; 8],
   /// https://github.com/Distrotech/tar/blob/273975b/src/tar.h#L50
   pub typ: u8,

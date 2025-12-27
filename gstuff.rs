@@ -133,7 +133,7 @@ fn isatty (fd: c_int) -> c_int {unsafe {libc::isatty (fd)}}
 fn isatty (_fd: c_int) -> c_int {0}
 
 #[cfg(feature = "crossterm")]
-static mut STATUS_LINE: Mutex<String> = Mutex::new (String::new());
+static mut STATUS_LINE: IniMutex<String> = IniMutex::none();
 
 #[cfg(feature = "crossterm")]
 pub struct IsTty {pub is_tty: AtomicI8}
@@ -199,7 +199,7 @@ pub fn status_line (file: &str, line: u32, status: &str) {
   use std::hash::Hasher;
 
   #[allow(static_mut_refs)]
-    if let Ok (mut status_line) = unsafe {STATUS_LINE.lock()} {
+    if let Ok (mut status_line) = unsafe {STATUS_LINE.spin_defaultᵗ (SPIN_OUT)} {
       let mut stdout = stdout();
       let old_hash = {let mut hasher = DefaultHasher::new(); hasher.write (status_line.as_bytes()); hasher.finish()};
       status_line.clear();
@@ -227,7 +227,7 @@ pub fn status_line_clear() -> String {
   use io::{stdout, Write};
   let mut ret = String::new();
   #[allow(static_mut_refs)]
-  if let Ok (mut status_line) = unsafe {STATUS_LINE.lock()} {
+  if let Ok (mut status_line) = unsafe {STATUS_LINE.spin_defaultᵗ (SPIN_OUT)} {
     if *ISATTY && !status_line.is_empty() {
       let mut stdout = stdout();
         STATUS_LINE_LM.s (now_ms() as usize);
@@ -245,7 +245,7 @@ pub fn with_status_line (code: &dyn Fn()) {
   use io::{stdout, Write};
 
   #[allow(static_mut_refs)]
-  if let Ok (status_line) = unsafe {STATUS_LINE.lock()} {
+  if let Ok (status_line) = unsafe {STATUS_LINE.spin_defaultᵗ (SPIN_OUT)} {
     if !*ISATTY || status_line.is_empty() {
       code()
     } else {
@@ -395,6 +395,11 @@ pub const fn days_from_civil (mut y: i32, m: u32, d: u32) -> i32 {
   let doy = (153 * (m as i32 + (if 2 < m {-3} else {9})) + 2) as u32 / 5 + d - 1;  // 0..=365
   let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;  // 0..=146096
   era * 146097 + doe as i32 - 719468}
+
+/// 0 = Sun, 1 = Mon .. 6 = Sat
+pub const fn ymd2dow (mut y: i32, m: i32, mut d: i32) -> i32 {
+  if m < 3 {y -= 1} else {d -= 2}
+  (23*m/9 + d + 4 + y/4 - y/100 + y/400 + y) % 7}
 
 /// into integer with centiseconds "%y%m%d%H%M%S%.2f"
 #[cfg(feature = "chrono")]
@@ -972,11 +977,17 @@ impl<T> IniMutex<T> {
       Ok (lock) => Err (lock),
       Err (au) => Err (au)}}
 
-  //⌥ add a method to spin for a limited amount of time and/or CPU ticks, `spinʷ`
   pub fn spin (&self) -> IniMutexGuard<'_, T> {
     loop {
       if let Ok (lock) = self.lock() {return lock}
       pause_yield()}}
+
+  /// “spin-out” if out of `spins`
+  pub fn spinᵗ (&self, spins: u32) -> Result<IniMutexGuard<'_, T>, &'static str> {
+    for spin in 0..spins {
+      if let Ok (lock) = self.lock() {return Ok (lock)}
+      if spin % 10 == 0 {spin_loop()} else {thread::yield_now()}}
+    Err ("spin-out")}
 
   #[cfg(feature = "re")]
   pub fn lock_init (&self, init: &mut dyn FnMut() -> re::Re<T>) -> Result<IniMutexGuard<'_, T>, LockInitErr> {
@@ -1006,14 +1017,26 @@ impl<T> IniMutex<T> {
         Err (LockInitErr::Lock (_l)) => pause_yield(),
         Err (LockInitErr::Init (err)) => break Err (err)}}}
 
+  /// “spin-out” if out of `spins`
+  #[cfg(feature = "re")]
+  pub fn spin_initᵗ (&self, spins: u32, init: &mut dyn FnMut() -> re::Re<T>) -> Result<IniMutexGuard<'_, T>, String> {
+    for spin in 0..spins {
+      match self.lock_init (init) {
+        Ok (lock) => return Ok (lock),
+        Err (LockInitErr::Lock (_l)) => {
+          if spin % 10 == 0 {spin_loop()} else {thread::yield_now()}},
+        Err (LockInitErr::Init (err)) => return Err (err)}}
+    Err ("spin-out".to_string())}
+
   /// `drop` the instance and reset the mutex to uninitialized
   pub fn evict (lock: IniMutexGuard<'_, T>) {unsafe {
     let vc = &mut *lock.lo.vc.get();
-    let mut swap: T = MaybeUninit::zeroed().assume_init();
-    core::mem::swap (&mut swap, vc.assume_init_mut());
+    let val = core::ptr::read (vc) .assume_init();
     lock.lo.au.store (0, Ordering::Release);
+    // We used to clean released memory with zeroes via `zeroed`,
+    // but compiler would now erroneously emits `ud2` upon seeing this.
     core::mem::forget (lock);
-    drop (swap)}}}
+    drop (val)}}}
 
 impl<T> Default for IniMutex<T> {
   /// Defaults to `none` (no value in mutex)
@@ -1048,7 +1071,16 @@ impl<T: Default> IniMutex<T> {
   pub fn spin_default (&self) -> IniMutexGuard<'_, T> {
     loop {
       if let Ok (lock) = self.lock_default() {return lock}
-      pause_yield()}}}
+      pause_yield()}}
+
+  pub fn spin_defaultᵗ (&self, mut spins: u32) -> Result<IniMutexGuard<'_, T>, i8> {
+    loop {
+      match self.lock_default() {
+        Ok (lock) => return Ok (lock),
+        Err (err) => {
+          if spins == 0 {return Err (err)}
+          spins -= 1;
+          if spins % 10 == 0 {spin_loop()} else {thread::yield_now()}}}}}}
 
 impl<T> Deref for IniMutexGuard<'_, T> {
   type Target = T;
@@ -1477,6 +1509,11 @@ pub mod tpool {
 
   /// Post `task` to shared `TPOOL` if available, or run it on current thread otherwise.  
   /// Returns `false` if `task` was invoked directly.
+  /// 
+  ///     tpost (123, 1, Box::new (move || -> Re<()> {
+  ///       log! ("t " [thread::current().id()] ',' [thread::current().name().unwrap_or ("-")]);
+  ///       Re::Ok(())}))?;
+  /// 
   /// * `spin` - Try to obtain `TPOOL` this many times before falling back to direct invocation of `task`.
   /// * `threads` - Use direct invocation if there is less than the given number of threads in the pool.
   pub fn tpost (mut spin: u32, threads: u8, task: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> Re<bool> {

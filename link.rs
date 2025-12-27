@@ -28,3 +28,7 @@ pub fn c (fun: &str, s: &str, u: u64, a: &mut dyn Any) -> Re<Json> {
   match func {
     Some (func) => func (s, u, a),
     None => fail! ("!c," (fun))}}
+
+/// Like `c`, but uses nil arguments and returns ()
+pub fn c0 (fun: &str) -> Re<()> {
+  c (fun, "", 0, &mut 0)?; Re::Ok(())}

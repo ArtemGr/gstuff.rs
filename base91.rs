@@ -13,7 +13,7 @@ const BASE: usize = 91;
 const UNDEFINED: i32 = -1;
 
 impl Base91Tables {
-  const fn new (alphabet: &'static [u8]) -> Base91Tables {
+  pub const fn new (alphabet: &'static [u8]) -> Base91Tables {
     if alphabet.len() != BASE {panic! ("Wrong alphabet length")}
     let mut decoding_table: [i8; 256] = [UNDEFINED as i8; 256];
     let mut ofs = 0;
