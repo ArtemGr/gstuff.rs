@@ -9,6 +9,7 @@ use memmap2::{Mmap, MmapOptions, MmapMut};
 use std::ffi;
 use std::fs;
 use std::io::{self, Write};
+use std::os::fd::BorrowedFd;
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::str::from_utf8_unchecked;
@@ -65,7 +66,7 @@ impl Drop for Lock {
         (*flsp).l_whence = libc::SEEK_SET as libc::c_short;
         fls.assume_init()}};
     let cmd = nix::fcntl::FcntlArg::F_SETLK (&fls);
-    let rc = nix::fcntl::fcntl (self.fd, cmd);
+    let rc = nix::fcntl::fcntl (unsafe {BorrowedFd::borrow_raw (self.fd)}, cmd);
     debug_assert! (rc.is_ok(), "{:?}", rc)}}
 
 /// try to lock the file, nonblocking
@@ -93,7 +94,7 @@ pub fn lock (file: &fs::File, ex: bool) -> Result<Lock, i32> {
       fls.assume_init()}};
   let cmd = nix::fcntl::FcntlArg::F_SETLK (&fls);  // non-blocking
   let fd = file.as_raw_fd();
-  match nix::fcntl::fcntl (fd, cmd) {
+  match nix::fcntl::fcntl (&file, cmd) {
     Ok (_) => Ok (Lock {fd}),
     Err(e) => Err (e as i32)}}
 
@@ -525,7 +526,7 @@ pub mod sq {
   /// unless we're using the database from a single thread anyway.
   pub type SConn = StrongA<TSafe<rusqlite::Connection>>;
   pub fn sconn (db: Connection) -> SConn {StrongA::new (TSafe (db))}}
-//dai//
+
 #[cfg(feature = "sqlite")] pub mod csq {
   // cf. https://www.sqlite.org/vtab.html, https://sqlite.org/src/file?name=ext/misc/csv.c&ci=trunk
 

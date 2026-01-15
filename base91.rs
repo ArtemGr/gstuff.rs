@@ -188,7 +188,7 @@ pub fn capacity_hint (base91len: usize) -> usize {
   #[bench] fn base91formatᵇ (bm: &mut test::Bencher) {
     let mut buf = SmallVec::<[u8; 256]>::new();
     let payload = b"foobar; foobar; foobar; foobar; foobar; foobar; foobar; foobar; foobar; foobar";
-    fn b91fmt (payload: &[u8]) -> Base91Display {Base91Display {tables: &BASE91JS, payload}}
+    fn b91fmt (payload: &[u8]) -> Base91Display<'_> {Base91Display {tables: &BASE91JS, payload}}
     bm.iter (|| {
       buf.clear();
       write! (&mut buf, "{}", b91fmt (payload)) .unwrap()});

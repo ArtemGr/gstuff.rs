@@ -565,7 +565,7 @@ pub fn iso8601ics (iso: &[u8]) -> i64 {
   #[bench] fn ms2iso8601ᵇ (bm: &mut test::Bencher) {
     let mut rng = SmallRng::seed_from_u64 (now_ms());
     bm.iter (|| {
-      let it = ms2iso8601 (rng.gen::<i64>().abs());
+      let it = ms2iso8601 (rng.random::<i64>().abs());
       assert! (black_box (it) .ends_with ('Z'))})}
 
   #[bench] fn chrono_iso8601 (bm: &mut test::Bencher) {
@@ -578,7 +578,7 @@ pub fn iso8601ics (iso: &[u8]) -> i64 {
     let mut rng = SmallRng::seed_from_u64 (now_ms());
     let mut samples = Vec::with_capacity (65536);
     while samples.len() < samples.capacity() {
-      let ms = rng.gen::<i64>().abs() / 10 * 10;
+      let ms = rng.random::<i64>().abs() / 10 * 10;
       if let Some (udt) = Utc.timestamp_millis_opt (ms) .earliest() {
         let day = (ms / 1000 / 86400) as i32;
         let (y, m, d) = civil_from_days (day);
