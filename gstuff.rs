@@ -1402,6 +1402,114 @@ impl<'a> DoubleEndedIterator for LinesIt<'a> {
       self.tail = self.head;
       Some (line)}}}
 
+// cf. https://github.com/TimNN/shuffled-iter
+pub mod shuffled_iter {
+    use crate::now_ms;
+
+  /// Iterates over `0..len` in pseudo-random order, no allocation.
+  pub struct ShuffledIter {
+    len: usize,
+    mask: u64,  // next power-of-two minus 1, >= len-1
+    counter: u64,
+    emitted: u64,
+    // Feistel-like bijective permutation parameters (3 rounds).
+    // Each multiply-by-odd is a bijection mod 2^n; XOR is a bijection; composition is bijection.
+    f: [u64; 3],  // odd factors (bijective multipliers mod 2^bits)
+    x: [u64; 3]}  // xor constants
+
+  impl ShuffledIter {
+    pub fn with_seed (len: usize, seed: u64) -> ShuffledIter {
+      let mask = if len <= 1 {0} else {
+        let bits = 64 - ((len - 1) as u64) .leading_zeros();
+        (1u64 << bits) - 1};
+      // Derive 3 rounds of (odd-factor, xor-constant) from the seed.
+      // splitmix64-style expansion ensures good bit diversity.
+      let mut s = seed;
+      let mut next = || -> u64 {
+        s = s.wrapping_add (0x9e3779b97f4a7c15);
+        let mut z = s;
+        z = (z ^ (z >> 30)).wrapping_mul (0xbf58476d1ce4e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul (0x94d049bb133111eb);
+        z ^ (z >> 31)};
+      let f = [next() | 1, next() | 1, next() | 1];  // `| 1` ensures odd → bijective multiplier mod 2^n
+      let x = [next(), next(), next()];
+      ShuffledIter {len, mask, counter: 0, emitted: 0, f, x}}
+
+    /// Bijective mixing: maps counter to a pseudo-random value within `0..=mask`.
+    ///
+    /// Each round does `val = (val * odd) ^ xor_const`, masked to `bits` bits.
+    /// Multiplying by an odd number is a bijection mod 2^n (it has a multiplicative
+    /// inverse mod 2^n because gcd(odd, 2^n)==1). XOR is trivially a bijection.
+    /// The composition of bijections is a bijection, so every input in `0..=mask`
+    /// maps to a unique output in `0..=mask`. Cycle-walking (skipping values ≥ len)
+    /// then gives a permutation of `0..len` — every index visited exactly once.
+    #[inline]
+    fn mix (&self, val: u64) -> u64 {
+      let mut v = val;
+      for i in 0..3 {v = (v.wrapping_mul (self.f[i]) ^ self.x[i]) & self.mask}
+      v}}
+
+  impl Iterator for ShuffledIter {
+    type Item = usize;
+
+    #[inline]
+    fn next (&mut self) -> Option<usize> {
+      if self.len == 0 {return None}
+      if self.emitted >= self.len as u64 {return None}
+      loop {
+        let candidate = self.mix (self.counter);
+        self.counter += 1;
+        if candidate < self.len as u64 {
+          self.emitted += 1;
+          return Some (candidate as usize)}}}}
+
+  /// Iterate over a slice in random order, yielding `(index, &T)`.
+  pub fn shuffled<T> (seed: u64, v: &[T]) -> impl Iterator<Item = (usize, &T)> {
+    let len = v.len();
+    ShuffledIter::with_seed (len, seed) .map (move |ix| (ix, &v[ix]))}
+
+  #[test]
+  fn every_index_visited () {
+    for len in [0, 1, 2, 3, 7, 8, 15, 16, 100, 1000, 1024, 1025] {
+      let mut seen = vec![false; len];
+      let it = ShuffledIter::with_seed (len, crate::now_ms());
+      let mut count = 0usize;
+      for ix in it {
+        assert! (ix < len, "index {ix} out of bounds for len {len}");
+        assert! (!seen[ix], "index {ix} visited twice (len {len})");
+        seen[ix] = true;
+        count += 1;}
+      assert_eq! (count, len, "expected {len} items, got {count}");
+      assert! (seen.iter().all (|&v| v || len == 0), "not every index visited (len {len})");}}
+
+  #[test]
+  fn shuffled_vec_demo() {
+    let data = vec!["alpha", "beta", "gamma", "delta", "epsilon"];
+    let mut visited = vec![false; data.len()];
+    for (ix, val) in shuffled (now_ms(), &data) {
+      assert! (!visited[ix]);
+      visited[ix] = true;
+      assert_eq! (*val, data[ix]);}
+    assert! (visited.iter().all (|&v| v));}
+
+  #[test]
+  fn deterministic_with_same_seed() {
+    let seed = 42u64;
+    let a: Vec<usize> = ShuffledIter::with_seed (50, seed) .collect();
+    let b: Vec<usize> = ShuffledIter::with_seed (50, seed) .collect();
+    assert_eq! (a, b);}
+
+  #[test]
+  fn likely_not_sequential() {
+    let data: Vec<usize> = (0..100) .collect();
+    let mut same_pos = 0;
+    for (ix, &val) in shuffled (now_ms(), &data) {assert_eq! (ix, val)}
+    let yielded_indices: Vec<usize> = shuffled (now_ms(), &data) .map (|p| p.0) .collect();
+    for (i, &ix) in yielded_indices.iter().enumerate() {
+      if i == ix {same_pos += 1}}
+    // Improbable that a shuffled array of 100 elements has more than a few elements in their original positions
+    assert! (same_pos < 1, "{}", same_pos)}}
+
 /// Pool which `join`s `thread`s on `drop`.
 #[cfg(all(feature = "crossterm", feature = "fomat-macros", feature = "inlinable_string", feature = "reffers", feature = "re"))]
 pub mod tpool {

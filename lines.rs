@@ -1,3 +1,4 @@
+#[cfg(unix)] use std::os::fd::BorrowedFd;
 #[cfg(unix)] use std::os::fd::RawFd;
 use core::cell::RefCell;
 use core::mem::MaybeUninit;
@@ -9,7 +10,6 @@ use memmap2::{Mmap, MmapOptions, MmapMut};
 use std::ffi;
 use std::fs;
 use std::io::{self, Write};
-use std::os::fd::BorrowedFd;
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::str::from_utf8_unchecked;
@@ -896,13 +896,19 @@ pub struct Stat {
 
 #[cfg(unix)] impl Dir {
   pub fn new (path: &dyn AsRef<Path>, flags: i8) -> Re<Dir> {
-    let path = ffi::CString::new (path.as_ref().to_str()?)?;
+    let pathᶜ = ffi::CString::new (path.as_ref().to_str()?)?;
     let mut fl = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOCTTY;
     // Processes lacking CAP_FOWNER cannot bypass ownership checks for O_NOATIME
-    if flags & 0b1 == 0 {fl |= libc::O_NOATIME}
+    if flags & 0b01 == 0 {fl |= libc::O_NOATIME}
     // https://man7.org/linux/man-pages/man2/open.2.html
-    let fd = unsafe {libc::open (path.as_ptr(), fl, 0)};
-    if fd == -1 {fail! ((io::Error::last_os_error()))}
+    let fd = unsafe {libc::open (pathᶜ.as_ptr(), fl, 0)};
+    if fd == -1 {
+      let err = io::Error::last_os_error();
+      if flags & 0b10 != 0 && err.raw_os_error() == Some (libc::ENOENT) {  // mkdir if 0b10
+        let rc = unsafe {libc::mkdir (pathᶜ.as_ptr(), 0o750)};
+        if rc == -1 {fail! ((io::Error::last_os_error()))}
+        return Dir::new (path, flags & !0b10)}
+      fail! ((err))}
     Re::Ok (Dir {fd, dir: RefCell::new (null_mut())})}
 
   pub fn list (&self, cb: &mut dyn FnMut (&[u8]) -> Re<bool>) -> Re<()> {
