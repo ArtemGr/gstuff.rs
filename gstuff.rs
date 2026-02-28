@@ -124,6 +124,8 @@ pub mod lines;
 #[cfg(feature = "link")]
 pub mod link;
 
+pub mod aarc;
+
 // --- status line -------
 
 #[cfg(all(feature = "crossterm", not(target_arch = "wasm32")))]
@@ -1404,7 +1406,7 @@ impl<'a> DoubleEndedIterator for LinesIt<'a> {
 
 // cf. https://github.com/TimNN/shuffled-iter
 pub mod shuffled_iter {
-    use crate::now_ms;
+  use crate::now_ms;
 
   /// Iterates over `0..len` in pseudo-random order, no allocation.
   pub struct ShuffledIter {
@@ -1472,7 +1474,7 @@ pub mod shuffled_iter {
   fn every_index_visited () {
     for len in [0, 1, 2, 3, 7, 8, 15, 16, 100, 1000, 1024, 1025] {
       let mut seen = vec![false; len];
-      let it = ShuffledIter::with_seed (len, crate::now_ms());
+      let it = ShuffledIter::with_seed (len, now_ms());
       let mut count = 0usize;
       for ix in it {
         assert! (ix < len, "index {ix} out of bounds for len {len}");
@@ -1508,7 +1510,7 @@ pub mod shuffled_iter {
     for (i, &ix) in yielded_indices.iter().enumerate() {
       if i == ix {same_pos += 1}}
     // Improbable that a shuffled array of 100 elements has more than a few elements in their original positions
-    assert! (same_pos < 1, "{}", same_pos)}}
+    assert! (same_pos < 9, "{}", same_pos)}}
 
 /// Pool which `join`s `thread`s on `drop`.
 #[cfg(all(feature = "crossterm", feature = "fomat-macros", feature = "inlinable_string", feature = "reffers", feature = "re"))]
