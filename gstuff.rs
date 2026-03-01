@@ -519,7 +519,8 @@ pub fn iso8601ics (iso: &[u8]) -> i64 {
                 ics[13] = iso[20]; ics[14] = iso[21]}}}}}}}
   match b2s (&ics) .parse() {Ok (k) => k, Err (_err) => 0}}
 
-#[cfg(all(test, feature = "nightly", feature = "chrono", feature = "inlinable_string", feature = "re"))] mod time_bench {
+#[cfg(all(test, feature = "nightly", feature = "chrono", feature = "inlinable_string", feature = "re"))]
+mod time_bench {
   extern crate test;
   use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone, Timelike, Utc};
   use crate::{civil_from_days, days_from_civil, ics2ldt, ics2ms, ics2ndt, iso8601ics, ldt2ics, ms2ics, ms2iso8601, now_ms, re::Re};
@@ -1128,29 +1129,6 @@ impl<T: Clone> Clone for TSafe<T> {fn clone (&self) -> Self {TSafe (self.0.clone
 impl<T: fmt::Debug> fmt::Debug for TSafe<T> {fn fmt (&self, ft: &mut fmt::Formatter<'_>) -> fmt::Result {self.0.fmt (ft)}}
 impl<T: fmt::Display> fmt::Display for TSafe<T> {fn fmt (&self, ft: &mut fmt::Formatter<'_>) -> fmt::Result {self.0.fmt (ft)}}
 
-#[cfg(all(feature = "re", feature = "reffers"))]
-pub trait SpinA<T> {
-  /// Exclusive “write” lock. Assuming that there is but little contention, fails after spinning a while.
-  fn spinʷ (self: &Self) -> re::Re<reffers::arc::RefMut<T>>;
-  /// Shared “read” lock. Assuming that there is but little contention, fails after spinning a while.
-  fn spinʳ (self: &Self) -> re::Re<reffers::arc::Ref<T>>;}
-
-#[cfg(all(feature = "re", feature = "reffers"))]
-impl<T> SpinA<T> for reffers::arc::Strong<T> {
-  fn spinʷ (&self) -> re::Re<reffers::arc::RefMut<T>> {
-    let timeout = unsafe {SPIN_OUT};
-    for spin in 0..timeout {
-      if let Ok (lock) = self.try_get_refmut() {return re::Re::Ok (lock)}
-      if spin % 10 == 0 {spin_loop()} else {thread::yield_now()}}
-    re::Re::Err ("spin-out".into())}
-
-  fn spinʳ (&self) -> re::Re<reffers::arc::Ref<T>> {
-    let timeout = unsafe {SPIN_OUT};
-    for spin in 0..timeout {
-      if let Ok (lock) = self.try_get_ref() {return re::Re::Ok (lock)}
-      if spin % 10 == 0 {spin_loop()} else {thread::yield_now()}}
-    re::Re::Err ("spin-out".into())}}
-
 /// Helps logging binary data (particularly with text-readable parts, such as bencode, netstring)
 /// by replacing all the non-printable bytes with the `blank` character.
 pub fn binprint (bin: &[u8], blank: u8) -> String {
@@ -1406,6 +1384,15 @@ impl<'a> DoubleEndedIterator for LinesIt<'a> {
 
 // cf. https://github.com/TimNN/shuffled-iter
 pub mod shuffled_iter {
+  //! Iterates over `0..len` or a slice in pseudo-random order, with zero allocation.
+  //! Uses a Feistel-like bijective permutation combined with cycle-walking to visit every index exactly once.
+  //! ### `ShuffledIter` Methods
+  //! * `fn with_seed (len: usize, seed: u64) -> ShuffledIter`
+  //!   Creates new iterator over `0..len` using given seed.
+  //! ### Functions
+  //! * `fn shuffled<T> (seed: u64, v: &[T]) -> impl Iterator<Item = (usize, &T)>`
+  //!   Iterates over slice in random order, yielding `(index, &T)`.
+
   use crate::now_ms;
 
   /// Iterates over `0..len` in pseudo-random order, no allocation.
@@ -1513,109 +1500,146 @@ pub mod shuffled_iter {
     assert! (same_pos < 9, "{}", same_pos)}}
 
 /// Pool which `join`s `thread`s on `drop`.
-#[cfg(all(feature = "crossterm", feature = "fomat-macros", feature = "inlinable_string", feature = "reffers", feature = "re"))]
-pub mod tpool {
-  use crate::{any_to_str, IniMutex};
+#[cfg(feature = "tpool")] pub mod tpool {
+  //! ### `TPool` Methods
+  //! * `fn post (&self, task: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> Re<()>`
+  //!   Runs given callback from one of `sponsor`ed threads.
+  //! * `fn fin (&self, tag: InlinableString, fin: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> bool`
+  //!   Registers given callback, if not already per tag, to be run (FIFO) after pool threads are joined in `stop`.
+  //! * `fn jobsⁿ (&self) -> Re<usize>` Number of jobs queued or running.
+  //! * `fn threadsⁿ (&self) -> usize` Number of threads in the pool.
+  //! * `fn bye (&self)` Signals threads to exit and prevents new jobs from being posted.
+  //! * `fn stop (&self) -> usize` Non-blocking stop: joins finished threads and runs finalizers.
+  //!
+  //! ### Global Functions
+  //! * `fn tpool() -> Result<AReadGuard<'static, TPool>, AArcErr>` Shared thread pool.
+  //! * `fn tpost (spin: u32, threads: u8, task: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> Re<bool>`
+  //!   Posts `task` to shared `TPOOL` if `threads` are in it, or runs on current thread otherwise.
+
+  use crate::any_to_str;
+  use crate::aarc::{AArc, AArcErr, AReadGuard};
   use crate::re::Re;
+  use fomat_macros::fomat;
   use inlinable_string::InlinableString;
-  use reffers::arc::{Strong as StrongA, Ref as RefA, RefMut as RefMutA};
   use std::collections::VecDeque;
   use std::hint::spin_loop;
   use std::panic::{catch_unwind, AssertUnwindSafe};
-  use std::sync::{Mutex, Condvar};
   use std::sync::atomic::{AtomicBool, AtomicI16, Ordering};
   use std::thread::{self, JoinHandle};
   use std::time::Duration;
+  use parking_lot::{Condvar, Mutex};
 
-  struct TJobs {
-    queue: Mutex<VecDeque<Box<dyn FnOnce() -> Re<()> + Send + 'static>>>,
-    alarm: Condvar,
-    running: AtomicI16,
-    bye: AtomicBool}
-  impl Default for TJobs {
-    fn default() -> TJobs {
-      TJobs {
-        queue: Mutex::new (VecDeque::new()),
-        alarm: Condvar::new(),
-        running: AtomicI16::new (0),
-        bye: AtomicBool::new (false)}}}
+  #[derive (Default)]
+  struct TPoolState {
+    queue: VecDeque<Box<dyn FnOnce() -> Re<()> + Send + 'static>>,
+    threads: Vec<(InlinableString, JoinHandle<Re<()>>)>,
+    finalizers: Vec<(InlinableString, Box<dyn FnOnce() -> Re<()> + Send + 'static>)>}
 
   #[derive (Default)]
   pub struct TPool {
-    jobs: StrongA<TJobs>,
-    pub threads: Vec<(InlinableString, JoinHandle<Re<()>>)>,
-    pub finalizers: Vec<(InlinableString, Box<dyn FnOnce() -> Re<()> + Send + 'static>)>}
+    state: Mutex<TPoolState>,
+    alarm: Condvar,
+    running: AtomicI16,
+    bye: AtomicBool}
 
   unsafe impl Send for TPool {}
   unsafe impl Sync for TPool {}
 
-  impl TPool {
+  pub trait Sponsor {
     /// Add thread to pool.  
     /// `false` if `tag` was already in thread pool.
-    pub fn sponsor (&mut self, tag: InlinableString) -> Re<bool> {
-      if self.threads.iter().any (|(tagʹ, _)| *tagʹ == tag) {return Re::Ok (false)}
-      let jobs = self.jobs.clone();
-      self.threads.push ((tag,
-        thread::Builder::new().name ("TPool".into()) .spawn (move || -> Re<()> {
+    fn sponsor (&self, tag: InlinableString) -> Re<bool>;}
+
+  impl Sponsor for AReadGuard<'_, TPool> {
+    /// > tpool()?.sponsor ("threadName13c".into())?;
+    fn sponsor (&self, tag: InlinableString) -> Re<bool> {
+      let mut state = self.state.lock();
+      if state.threads.iter().any (|(tagʹ, _)| *tagʹ == tag) {return Re::Ok (false)}
+      let tname = fomat! ("TP" (tag));  // Effective Linux length is 15 characters.
+      let pool = self.aarc();
+      state.threads.push ((tag,
+        thread::Builder::new().name (tname) .spawn (move || -> Re<()> {
+          let p = pool.spin_read::<TPool>()?;  // NB: Threads hold read lock over pool.
           loop {
             let task = {
-              let jobs = jobs.get_ref();
-              let mut queue = jobs.queue.lock()?;
-              match queue.pop_front() {
-                Some (j) => {jobs.running.fetch_add (1, Ordering::Relaxed); j}
-                None if jobs.bye.load (Ordering::Relaxed) => {break Re::Ok(())}
+              let mut state = p.state.lock();
+              match state.queue.pop_front() {
+                Some (j) => {p.running.fetch_add (1, Ordering::Relaxed); j}
+                // NB: We only check `bye` when out of jobs, in order for jobs to run to completion at shutdown
+                None if p.bye.load (Ordering::Relaxed) => {break Re::Ok(())}
                 None => {
-                  let (mut queue, _rc) = jobs.alarm.wait_timeout (queue, Duration::from_secs_f32 (0.31))?;
-                  if let Some (job) = queue.pop_front() {jobs.running.fetch_add (1, Ordering::Relaxed); job} else {continue}}}};
+                  p.alarm.wait_for (&mut state, Duration::from_secs_f32 (0.31));
+                  if let Some (job) = state.queue.pop_front() {p.running.fetch_add (1, Ordering::Relaxed); job} else {continue}}}};
             let rc = catch_unwind (AssertUnwindSafe (task));
-            let running = jobs.get_ref().running.fetch_sub (1, Ordering::Relaxed);
+            let running = p.running.fetch_sub (1, Ordering::Relaxed);
             if running < 0 {log! (a 202, [=running])}
             match rc {
               Ok (Re::Ok(())) => {}
               Ok (Re::Err (err)) => {log! (a 1, (err))}
               Err (err) => {log! (a 1, [any_to_str (&*err)])}}}})?));
-      Re::Ok (true)}
+      Re::Ok (true)}}
 
+  impl TPool {
     /// Run given callback from one of `sponsor`ed threads.
     pub fn post (&self, task: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> Re<()> {
-      let jobs = self.jobs.get_ref();
-      let mut queue = jobs.queue.lock()?;
-      queue.push_back (task);
-      jobs.alarm.notify_one();
+      // Lock before checking `bye` so worker threads can't observe empty queue and exit before we push
+      let mut state = self.state.lock();
+      if self.bye.load (Ordering::Relaxed) {return Re::Err ("TPool is stopping".into())}
+      state.queue.push_back (task);
+      self.alarm.notify_one();
       Re::Ok(())}
 
-    /// Run given callback after pool threads are joined in `drop`.  
+    /// Run given callback (FIFO) after pool threads are joined in `stop`.  
     /// `false` if non-empty `tag` was already registered.
-    pub fn fin (&mut self, tag: InlinableString, finalizer: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> bool {
-      if !tag.is_empty() && self.finalizers.iter().any (|(tagʹ, _)| *tagʹ == tag) {false}
-      else {self.finalizers.push ((tag, finalizer)); true}}
+    pub fn fin (&self, tag: InlinableString, finalizer: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> bool {
+      let mut state = self.state.lock();
+      if !tag.is_empty() && state.finalizers.iter().any (|(tagʹ, _)| *tagʹ == tag) {false}
+      else {state.finalizers.push ((tag, finalizer)); true}}
 
     /// Number of jobs queued or running.
     pub fn jobsⁿ (&self) -> Re<usize> {
-      let jobs = self.jobs.get_ref();
-      let queue = jobs.queue.lock()?;
-      Re::Ok (queue.len() + jobs.running.load (Ordering::Relaxed) .max (0) as usize)}}
+      let state = self.state.lock();
+      Re::Ok (state.queue.len() + self.running.load (Ordering::Relaxed) .max (0) as usize)}
 
-  impl Drop for TPool {
-    fn drop (&mut self) {
-      { let jobs = self.jobs.get_ref();
-        jobs.bye.store (true, Ordering::Relaxed);
-        let _queue = jobs.queue.lock();
-        jobs.alarm.notify_all(); }  // Flash `bye`
-      for (_tag, th) in self.threads.drain (..) {
-        match th.join() {
-          Ok (Re::Ok(())) => {}
-          Ok (Re::Err (err)) => {log! (a 1, (err))}
-          Err (err) => {log! (a 1, [any_to_str (&*err)])}}}
-      for (tag, finalizer) in self.finalizers.drain (..) {
+    /// Number of sponsored threads.
+    pub fn threadsⁿ (&self) -> usize {
+      self.state.lock().threads.len()}
+
+    /// Signal threads to exit and prevent new jobs from being posted.
+    pub fn bye (&self) -> usize {
+      self.bye.store (true, Ordering::Relaxed);
+      self.alarm.notify_all()}
+
+    /// Non-blocking stop: joins finished threads and runs finalizers if all threads are done.<br>
+    /// Returns the number of threads still running, should reach 0 when pool is stopped.
+    pub fn stop (&self) -> usize {
+      let mut finalizers = Vec::new();
+      let len = {
+        let mut state = self.state.lock();
+        let mut i = 0;
+        while i < state.threads.len() {
+          if state.threads[i].1.is_finished() {
+            let (_tag, th) = state.threads.remove (i);
+            match th.join() {
+              Ok (Re::Ok(())) => {}
+              Ok (Re::Err (err)) => {log! (a 1, (err))}
+              Err (err) => {log! (a 1, [any_to_str (&*err)])}}
+          } else {i += 1}}
+        if state.threads.is_empty() {
+          finalizers = std::mem::take (&mut state.finalizers)}
+        state.threads.len()};
+      for (tag, finalizer) in finalizers {  // FIFO
         let rc = catch_unwind (AssertUnwindSafe (finalizer));
         match rc {
           Ok (Re::Ok(())) => {}
           Ok (Re::Err (err)) => {log! (a 1, (tag) "] " (err))}
-          Err (err) => {log! (a 1, (tag) "] " [any_to_str (&*err)])}}}}}
+          Err (err) => {log! (a 1, (tag) "] " [any_to_str (&*err)])}}}
+      len}}
+
+  pub static _TPOOL: AArc = AArc::none();
 
   /// Shared thread pool.
-  pub static TPOOL: IniMutex<TPool> = IniMutex::none();
+  pub fn tpool() -> Result<AReadGuard<'static, TPool>, AArcErr> {_TPOOL.spin_default()}
 
   /// Post `task` to shared `TPOOL` if available, or run it on current thread otherwise.  
   /// Returns `false` if `task` was invoked directly.
@@ -1626,12 +1650,84 @@ pub mod tpool {
   /// 
   /// * `spin` - Try to obtain `TPOOL` this many times before falling back to direct invocation of `task`.
   /// * `threads` - Use direct invocation if there is less than the given number of threads in the pool.
-  pub fn tpost (mut spin: u32, threads: u8, task: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> Re<bool> {
-    loop {
-      spin -= 1; if spin == 0 {break}
-      let Ok (pool) = TPOOL.lock() else {spin_loop(); thread::yield_now(); continue};
-      if pool.threads.len() < threads as usize {break}
+  pub fn tpost (spin: u32, threads: u8, task: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> Re<bool> {
+    let pool = _TPOOL.spidʳ::<TPool> (spin)?;
+    if pool.threadsⁿ() < threads as usize {
+      task()?;
+      Re::Ok (false)
+    } else {
       pool.post (task)?;
-      return Re::Ok (true)}
-    task()?;
-    Re::Ok (false)}}
+      Re::Ok (true)}}
+
+  #[test]
+  fn jobs_n_gets_to_zero() {
+    let pool_arc = AArc::new (TPool::default());
+    let pool = pool_arc.spin_read::<TPool>().unwrap();
+
+    // Sponsor a worker thread
+    pool.sponsor ("test_worker".into()) .unwrap();
+
+    // Initially, jobs should be 0
+    assert_eq! (pool.jobsⁿ().unwrap(), 0);
+
+    // Post a task that sleeps for a short duration
+    pool.post (Box::new (|| {
+      thread::sleep (Duration::from_millis (50));
+      Re::Ok(())})) .unwrap();
+
+    // Right after posting, jobsⁿ should be at least 1 (queued or running)
+    assert_eq! (1, pool.jobsⁿ().unwrap());
+
+    // Wait for the job to complete
+    let mut cleared = false;
+    for _ in 0..90 {
+      if pool.jobsⁿ().unwrap() == 0 {
+        cleared = true;
+        break;}
+      thread::sleep (Duration::from_millis (10))}
+
+    // Assert that the jobs count successfully reached 0
+    assert! (cleared, "jobsⁿ did not reach 0 in time");
+    assert_eq! (pool.jobsⁿ().unwrap(), 0);
+    
+    pool.bye();
+    while pool.stop() > 0 {
+      thread::sleep (Duration::from_millis (10));}}
+
+  #[test]
+  fn vs_system() {
+    use std::sync::atomic::AtomicU64;
+    use std::time::Instant;
+
+    { let tpool = tpool().unwrap();
+      if tpool.threadsⁿ() == 0 {
+        tpool.sponsor ("vs_system".into()) .unwrap();
+        assert_eq! (tpool.threadsⁿ(), 1)} }
+
+    static TPOST_DONE: AtomicU64 = AtomicU64::new (0);
+    fn cps_tpost (count: u32, start: Instant) {
+      if count == 123 {
+        TPOST_DONE.store (start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        return}
+      assert! (tpost (10, 1, Box::new (move || {
+        cps_tpost (count + 1, start);
+        Re::Ok(())})) .unwrap())}
+    cps_tpost (0, Instant::now());
+
+    static THREAD_DONE: AtomicU64 = AtomicU64::new (0);
+    fn cps_thread (count: u32, start: Instant) {
+      if count == 123 {
+        THREAD_DONE.store (start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        return}
+      thread::spawn (move || cps_thread (count + 1, start));}
+    cps_thread (0, Instant::now());
+
+    loop {
+      let tpost_time = TPOST_DONE.load (Ordering::Relaxed);
+      let thread_time = THREAD_DONE.load (Ordering::Relaxed);
+      if tpost_time != 0 && thread_time != 0 {
+        // tpost: 122µs, thread: 5666µs
+        if true {print! ("tpost: {}µs, thread: {}µs ", tpost_time, thread_time)}
+        assert! (tpost_time < thread_time);
+        break}
+      thread::sleep (Duration::from_millis (20))}}}

@@ -3,6 +3,7 @@
 use core::cell::RefCell;
 use core::mem::MaybeUninit;
 use crate::{fail, LinesIt};
+use crate::aarc::AArc;
 use crate::re::Re;
 use fomat_macros::{fomat, pintln};
 use memchr::{memchr, memrchr};
@@ -316,15 +317,15 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
       ix += 1;
       if it.lines.len() <= ix {ix = 0}})}}
 
-#[cfg(all(feature = "base62", feature = "base91", feature = "serde_json", feature = "indexmap", feature = "gxhash", feature = "sqlite"))]
-pub mod sq {
+#[cfg(feature = "sq")] pub mod sq {
   use core::cell::UnsafeCell;
   use core::ffi::c_void;
   use core::hint::spin_loop;
   use core::mem::{transmute, ManuallyDrop};
   use core::ptr::null;
   use core::sync::atomic::{AtomicI64, Ordering};
-  use crate::{any_to_str, b2s, fail, log, ms2ics, AtI64, IniMutex, SpinA, TSafe, HOST};
+  use crate::{any_to_str, b2s, fail, log, ms2ics, AtI64, IniMutex, TSafe, HOST};
+  use crate::aarc::AArc;
   use crate::base62::{base62udec, U62};
   use crate::base91::BASE91JS;
   use crate::lines::Dir;
@@ -333,9 +334,6 @@ pub mod sq {
   use fomat_macros::{fomat, wite};
   use indexmap::IndexMap as IndexMapB;
   use inlinable_string::{InlinableString, StringExt};
-  use reffers::arc::{Strong as StrongA, Ref as RefA, RefMut as RefMutA};
-  use reffers::rc1::{RefMut as RefMut1, Strong as Strong1};
-  use reffers::rc2::Strong as Strong2;
   use rusqlite::{ffi as s3f, CachedStatement, Connection, Rows};
   use serde_json::{self as json, json, Value as Json};
   use smallvec::SmallVec;
@@ -389,11 +387,11 @@ pub mod sq {
 
   pub struct SqRows {
     rows: ManuallyDrop<UnsafeCell<Rows<'static>>>,  // pImpl to `sth`
-    sth: ManuallyDrop<Strong1<CachedStatement<'static>>>,
+    sth: ManuallyDrop<AArc>,
     db: ManuallyDrop<SConn>}
 
   impl SqRows {
-    pub fn new (rows: Rows<'static>, sth: Strong1<CachedStatement<'static>>, db: SConn) -> SqRows {SqRows {
+    pub fn new (rows: Rows<'static>, sth: AArc, db: SConn) -> SqRows {SqRows {
       rows: ManuallyDrop::new (UnsafeCell::new (rows)),
       sth: ManuallyDrop::new (sth),
       db: ManuallyDrop::new (db)}}
@@ -440,12 +438,14 @@ pub mod sq {
       ManuallyDrop::drop (&mut self.db)}}}
 
   pub fn run2rows (db: &SConn, sql: &[u8]) -> Re<SqRows> {
-    let dbʹ = db.spinʳ()?;
-    let mut st = RefMut1::new (dbʹ.0.prepare_cached (unsafe {core::str::from_utf8_unchecked (sql)})?);
-    let rs = st.query([])?;
+    let dbʹ = db.spin_read::<TSafe<rusqlite::Connection>>()?;
+    let stmt: CachedStatement<'static> = unsafe {transmute (dbʹ.0.prepare_cached (b2s (sql))?)};
+    let st = AArc::new (TSafe (stmt));
+    let mut st_guard = st.spin_write::<TSafe<CachedStatement<'static>>>()?;
+    let rs = st_guard.0.query([])?;
     Re::Ok (unsafe {SqRows::new (
-      core::mem::transmute (rs),
-      core::mem::transmute (st.get_strong()),
+      transmute (rs),
+      st.clone(),
       db.clone())})}
 
   /// return `Rows` wrapped together with `Statement`
@@ -462,23 +462,24 @@ pub mod sq {
   /// NB: Row is a singleton in SQLite, only use one before fetching another.
   #[macro_export] macro_rules! sq {
     ($db: expr, $params: expr, $($fq: tt)+) => {{
-      use $crate::SpinA;
       let mut sql = smallvec::SmallVec::<[u8; 256]>::new();
       fomat_macros::wite! (&mut sql, $($fq)+)?;
-      let dbʹ = $db.spinʷ()?;
-      let mut st = reffers::rc1::RefMut::new (dbʹ.0.prepare_cached (unsafe {core::str::from_utf8_unchecked (&sql)})?);
-      let rs = st.query ($params)?;
+      let dbʹ = $db.spin_write::<$crate::TSafe<rusqlite::Connection>>()?;
+      let stmt: rusqlite::CachedStatement<'static> = unsafe {
+        core::mem::transmute (dbʹ.0.prepare_cached (core::str::from_utf8_unchecked (&sql))?)};
+      let st = $crate::aarc::AArc::new ($crate::TSafe (stmt));
+      let mut st_guard = st.spin_write::<$crate::TSafe<rusqlite::CachedStatement<'static>>>()?;
+      let rs = st_guard.0.query ($params)?;
       unsafe {$crate::lines::sq::SqRows::new (
         core::mem::transmute (rs),
-        core::mem::transmute (st.get_strong()),
+        st.clone(),
         $db.clone())}}}}
 
   #[macro_export] macro_rules! se {
     ($db: expr, $params: expr, $($fq: tt)+) => {{
-      use $crate::SpinA;
       let mut buf = smallvec::SmallVec::<[u8; 256]>::new();
       fomat_macros::wite! (&mut buf, $($fq)+)?;
-      let dbʹ = $db.spinʷ()?;
+      let dbʹ = $db.spin_write::<$crate::TSafe<rusqlite::Connection>>()?;
       let mut sth = dbʹ.0.prepare_cached (unsafe {core::str::from_utf8_unchecked (&buf)})?;
       sth.execute ($params)?}};
 
@@ -500,7 +501,7 @@ pub mod sq {
       fmt::Result::Ok(())}}
 
   pub fn run2js (db: &SConn, sql: &[u8]) -> Re<Vec<IndexMap<InlinableString, Json>>> {
-    let dbʹ = db.try_get_ref()?;
+    let dbʹ = db.spin_read::<TSafe<rusqlite::Connection>>()?;
     let mut st = dbʹ.0.prepare (b2s (sql))?;
     let cols = st.column_count();
     let mut cnames = Vec::with_capacity (cols);
@@ -522,10 +523,10 @@ pub mod sq {
       js.push (jr)}
     Re::Ok (js)}
 
-  /// Should [prefer exclusive access](https://github.com/rusqlite/rusqlite/issues/342#issuecomment-592661330), `spinᵐ`,
+  /// Should [prefer exclusive access](https://github.com/rusqlite/rusqlite/issues/342#issuecomment-592661330), `spin_write`,
   /// unless we're using the database from a single thread anyway.
-  pub type SConn = StrongA<TSafe<rusqlite::Connection>>;
-  pub fn sconn (db: Connection) -> SConn {StrongA::new (TSafe (db))}}
+  pub type SConn = AArc;
+  pub fn sconn (db: Connection) -> SConn {AArc::new (TSafe (db))}}
 
 #[cfg(feature = "sqlite")] pub mod csq {
   // cf. https://www.sqlite.org/vtab.html, https://sqlite.org/src/file?name=ext/misc/csv.c&ci=trunk
@@ -710,14 +711,18 @@ pub mod sq {
       fs::remove_file ("lock_ex_not_rd") .unwrap();
       fs::remove_file ("lock_ex_not_rd.rd") .unwrap()}  // Tests the forked flag
     let _fl = super::LockAndLoad::ex (&"lock_ex_not_rd", b"") .unwrap();  // Creates and locks the file
-    if unsafe {libc::fork()} == 0 {
+    let pid = unsafe {libc::fork()};
+    if pid == 0 {
       let Re::Err (err) = super::LockAndLoad::rd (&"lock_ex_not_rd", b"") else {panic! ("rd")};
       assert! (err.ends_with ("] 11"));  // Locked in parent
       fs::File::create ("lock_ex_not_rd.rd") .unwrap();  // flag as tested
       std::process::exit (0)
     } else {
+      let mut attempts = 0;
       while !std::path::Path::new ("lock_ex_not_rd.rd") .exists() {
-        std::thread::sleep (std::time::Duration::from_secs_f32 (0.123))}}}
+        if 55 < attempts {unsafe {libc::kill (pid, libc::SIGKILL)}; panic! ("timeout")}
+        std::thread::sleep (std::time::Duration::from_secs_f32 (0.123));
+        attempts += 1}}}
 
   #[bench] fn lock_ex (bm: &mut test::Bencher) {
     #[cfg(unix)] std::env::set_current_dir ("/tmp") .unwrap();
@@ -729,13 +734,13 @@ pub mod sq {
       let _lock = black_box (super::lock (&file, true) .unwrap());
       #[cfg(unix)] {assert! (_lock.fd != 0)}})}
 
-  #[cfg(all(unix, test))] fn sqrm (path: &str) {
+  #[cfg(all(all (unix, test, feature = "sq")))] fn sqrm (path: &str) {
     let _ = fs::remove_file (path);
     let _ = fs::remove_file (format! ("{}-shm", path));
     let _ = fs::remove_file (format! ("{}-wal", path));}
 
   /// create and lock test SQLite database at `path`
-  #[cfg(all(unix, test))] fn sqlock (path: &str, ex: bool, flag: &str) {
+  #[cfg(all(unix, test, feature = "sq"))] fn sqlock (path: &str, ex: bool, flag: &str) {
     sqrm (path);
     let db3 = rusqlite::Connection::open (path) .unwrap();
     db3.execute_batch (&super::sq::sqtune ("main")) .unwrap();
@@ -746,19 +751,23 @@ pub mod sq {
     std::thread::sleep (std::time::Duration::from_secs_f32 (2.345))}
 
   /// verify that `rd` fails against EXCLUSIVE
-  #[cfg(unix)] #[test] fn lock_sq_rd() {
+  #[cfg(all(unix, feature = "sq"))] #[test] fn lock_sq_rd() {
     std::env::set_current_dir ("/tmp") .unwrap();
     defer! {fs::remove_file ("lock_sq_rd.created") .unwrap(); sqrm ("lock_sq_rd.db3")}
-    if unsafe {libc::fork()} == 0 {
+    let pid = unsafe {libc::fork()};
+    if pid == 0 {
       sqlock ("lock_sq_rd.db3", true, "lock_sq_rd.created"); std::process::exit (0)
     } else {
+      let mut attempts = 0;
       while !std::path::Path::new ("lock_sq_rd.created") .exists() {
-        std::thread::sleep (std::time::Duration::from_secs_f32 (0.123))}
+        if 55 < attempts {unsafe {libc::kill (pid, libc::SIGKILL)}; panic! ("timeout")}
+        std::thread::sleep (std::time::Duration::from_secs_f32 (0.123));
+        attempts += 1}
       let Re::Err (err) = super::LockAndLoad::rd (&"lock_sq_rd.db3", b"") else {panic! ("rd")};
       assert! (err.ends_with ("] 11"))}}
 
   /// verify that `ex` fails against SHARED
-  #[cfg(unix)] #[test] fn lock_sq_ex() {
+  #[cfg(all(unix, feature = "sq"))] #[test] fn lock_sq_ex() {
     std::env::set_current_dir ("/tmp") .unwrap();
     defer! {fs::remove_file ("lock_sq_ex.created") .unwrap(); sqrm ("lock_sq_ex.db3")}
     if unsafe {libc::fork()} == 0 {

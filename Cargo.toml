@@ -22,10 +22,12 @@ base91 = ["smallvec"]
 rdtsc = []  # nop
 re = ["fomat-macros"]
 lines = ["nix", "re", "winapi", "memmap2", "memchr"]
-sqlite = ["base62", "base91", "ser", "gxhash", "lines", "re", "reffers", "rusqlite", "smallvec", "crossterm", "inlinable_string", "fomat-macros"]
+sqlite = ["base62", "base91", "ser", "gxhash", "lines", "re", "rusqlite", "smallvec", "crossterm", "inlinable_string", "fomat-macros"]
 sync = ["fast_rsync", "gxhash"]
 link = ["fomat-macros", "gxhash", "indexmap", "inlinable_string", "serde_json"]
 ser = ["serde", "serde_json", "indexmap/serde", "inlinable_string/serde"]
+sq = ["base62", "base91", "serde_json", "indexmap", "gxhash", "sqlite", "tpool"]
+tpool = ["crossterm", "fomat-macros", "inlinable_string", "re", "parking_lot"]
 
 [dependencies]
 chrono = {version = "0.4", optional = true}
@@ -41,7 +43,7 @@ memmap2 = {version = "0.9", optional = true}
 nix = {version = "0.31", features = ["fs"], optional = true}
 num-bigint = {version = "0.4", optional = true}
 num-traits = {version = "0.2", optional = true}
-reffers = {version = "0.7", optional = true}
+parking_lot = {version = "0.12.5", optional = true}
 rusqlite = {version = "0.38", features = ["bundled", "functions", "vtab"], optional = true}
 serde = {version = "1", features = ["derive"], optional = true}
 serde_json = {version = "1", optional = true}
