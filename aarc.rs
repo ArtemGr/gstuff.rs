@@ -25,9 +25,9 @@
 //! * `AReadGuard::aarc (&self) -> AArc<C>` Recovers new `AArc` reference from read guard.
 //! * `AReadGuard::map<U> (self, f) -> AReadGuard<'_, U, C>` Maps the inner pointer to a new type.
 //! * `AReadGuard::try_map<U, E> (self, f) -> Result<AReadGuard<'_, U, C>, (Self, E)>`
-//! * `AReadGuard::upgrade / upgradeᵗ (self) -> Result<AWriteGuard<'_, T, C>, (Self, AArcErr)>`
-//!   Upgrades read lock to write lock without downcasting.
+//! * `AReadGuard::wr / wrᵗ (self) -> Result<AWriteGuard<'_, T, C>, (Self, AArcErr)>` Upgrades to write lock.
 //! * `AWriteGuard::aarc (&self) -> AArc<C>` Recovers new `AArc` reference from write guard.
+//! * `AWriteGuard::rd (self) -> AReadGuard<'_, T, C>` Downgrades to read lock.
 //! * `AWriteGuard::map<U> (self, f) -> AWriteGuard<'_, U, C>` Maps the inner pointer to a new type.
 //! * `AWriteGuard::try_map<U, E> (self, f) -> Result<AWriteGuard<'_, U, C>, (Self, E)>`
 //! * `AWriteGuard::set<U> (self, val: U) -> AWriteGuard<'_, U>`
@@ -609,7 +609,7 @@ impl<'a, T: ?Sized, C: ?Sized> AReadGuard<'a, T, C> {
   /// **Warning:** If two threads hold read locks and both attempt to upgrade, 
   /// they will spin-out, as neither would release their read lock.
   /// On failure the read guard is returned in the error tuple.
-  pub fn upgradeᵗ (self, spins: u32) -> Result<AWriteGuard<'a, T, C>, (Self, AArcErr)> {
+  pub fn wrᵗ (self, spins: u32) -> Result<AWriteGuard<'a, T, C>, (Self, AArcErr)> {
     let cb = unsafe {&*self.cb};
     for spin in 0..spins {
       let state = cb.state.load (Ordering::Acquire);
@@ -622,8 +622,8 @@ impl<'a, T: ?Sized, C: ?Sized> AReadGuard<'a, T, C> {
       if spin % 10 == 0 {spin_loop()} else {pause_yield()}}
     Err ((self, AArcErr::SpinOut))}
 
-  pub fn upgrade (self) -> Result<AWriteGuard<'a, T, C>, (Self, AArcErr)> {
-    self.upgradeᵗ (unsafe {SPIN_OUT})}}
+  pub fn wr (self) -> Result<AWriteGuard<'a, T, C>, (Self, AArcErr)> {
+    self.wrᵗ (unsafe {SPIN_OUT})}}
 
 impl<'a, T: ?Sized, C: ?Sized> Drop for AReadGuard<'a, T, C> {
   fn drop (&mut self) {
@@ -657,6 +657,14 @@ impl<'a, T: ?Sized, C: ?Sized> AWriteGuard<'a, T, C> {
     let old = cb.state.fetch_add (REF_INC, Ordering::Relaxed);
     if (old & REF_MASK) == REF_MASK {panic! ()}
     AArc {ptr: AtomicPtr::new (self.cb as *mut _)}}
+
+  pub fn rd (self) -> AReadGuard<'a, T, C> {
+    let cb = unsafe {&*self.cb};
+    cb.state.fetch_sub (WRITE_BIT - READ_INC, Ordering::Release);
+    let ptr = self.ptr as *const T;
+    let cb_ptr = self.cb;
+    forget (self);
+    AReadGuard {cb: cb_ptr, ptr, _phantom: PhantomData}}
 
   pub fn map<U: ?Sized, F: FnOnce (&mut T) -> &mut U> (self, f: F) -> AWriteGuard<'a, U, C> {
     let ptr = f (unsafe {&mut *self.ptr}) as *mut U;
@@ -746,10 +754,8 @@ mod tests {
     assert_eq! (aarc.status(), (0, "write-locked"));  // AWriteGuard holds the exclusive write lock.
     assert_eq! (*guard, 0);
     *guard = 42;
-    drop (guard);
-    assert_eq! (aarc.status(), (0, ""));  // Lock released.
     
-    let read_guard = aarc.spin_rd::<i32>().unwrap();
+    let read_guard = guard.rd();
     assert_eq! (aarc.status(), (1, ""));  // AReadGuard holds a shared read lock.
     assert_eq! (*read_guard, 42)}
 
@@ -784,7 +790,9 @@ mod tests {
     let mut write_guard = write_guard.set (42i32);
     assert_eq! (*write_guard, 42);
     *write_guard = 43;  // DerefMut allows in-place mutation
-    assert_eq! (*write_guard, 43);}  // AWriteGuard dropped: clears WRITE_BIT, data persists.
+    
+    let read_guard = write_guard.rd();
+    assert_eq! (*read_guard, 43);}  // AReadGuard dropped: clears READ_INC, data persists.
 
   #[test] fn re_init() {
     use crate::fail;
@@ -1226,18 +1234,19 @@ mod tests {
     { let guard = clone2.spin_rd::<String>().unwrap();
       assert_eq! (*guard, "hello");}}  // clone2 dropped: refcount 1→0, String deallocated.
 
-  #[test] fn upgrade() {
+  #[test] fn upgrade_downgrade() {
     let aarc: AArc = AArc::none();
     let _ = aarc.spid::<i32>().unwrap();
     let read_guard = aarc.spin_rd::<i32>().unwrap();
     assert_eq! (*read_guard, 0);
     assert_eq! (aarc.status(), (1, ""));
     // upgrade converts AReadGuard to AWriteGuard without downcasting
-    let mut write_guard = read_guard.upgrade().unwrap();
+    let mut write_guard = read_guard.wr().unwrap();
     assert_eq! (aarc.status(), (0, "write-locked"));
     *write_guard = 42;
-    drop (write_guard);
-    let read_guard2 = aarc.spin_rd::<i32>().unwrap();
+    // downgrade converts AWriteGuard to AReadGuard without downcasting
+    let read_guard2 = write_guard.rd();
+    assert_eq! (aarc.status(), (1, ""));
     assert_eq! (*read_guard2, 42)}
 
   #[test] fn typed_aarc() {
@@ -1245,8 +1254,7 @@ mod tests {
     let mut guard = aarc.spidʷ (100) .unwrap();
     assert_eq! (*guard, 0);
     *guard = 42;
-    drop (guard);
-    let read_guard = aarc.spin_rd().unwrap();
+    let read_guard = guard.rd();
     assert_eq! (*read_guard, 42)}
 
   #[test] fn upgrade_spin_out() {
@@ -1255,7 +1263,7 @@ mod tests {
     let read_guard1 = aarc.spin_rd::<i32>().unwrap();
     let read_guard2 = aarc.spin_rd::<i32>().unwrap();
     // upgradeᵗ fails if there are other active readers, returning the original AReadGuard
-    let (recovered_guard, err) = read_guard1.upgradeᵗ (10) .err().unwrap();
+    let (recovered_guard, err) = read_guard1.wrᵗ (10) .err().unwrap();
     assert_eq! (err, AArcErr::SpinOut);
     assert_eq! (aarc.status(), (2, ""));
     assert_eq! (*recovered_guard, 0);
