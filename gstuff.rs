@@ -1512,7 +1512,7 @@ pub mod shuffled_iter {
   //! * `fn stop (&self) -> usize` Non-blocking stop: joins finished threads and runs finalizers.
   //!
   //! ### Global Functions
-  //! * `fn tpool() -> Result<AReadGuard<'static, TPool>, AArcErr>` Shared thread pool.
+  //! * `fn tpool() -> Result<AReadGuard<'static, TPool, TPool>, AArcErr>` Shared thread pool.
   //! * `fn tpost (spin: u32, threads: u8, task: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> Re<bool>`
   //!   Posts `task` to shared `TPOOL` if `threads` are in it, or runs on current thread otherwise.
 
@@ -1550,7 +1550,7 @@ pub mod shuffled_iter {
     /// `false` if `tag` was already in thread pool.
     fn sponsor (&self, tag: InlinableString) -> Re<bool>;}
 
-  impl Sponsor for AReadGuard<'_, TPool> {
+  impl Sponsor for AReadGuard<'_, TPool, TPool> {
     /// > tpool()?.sponsor ("threadName13c".into())?;
     fn sponsor (&self, tag: InlinableString) -> Re<bool> {
       let mut state = self.state.lock();
@@ -1559,19 +1559,19 @@ pub mod shuffled_iter {
       let pool = self.aarc();
       state.threads.push ((tag,
         thread::Builder::new().name (tname) .spawn (move || -> Re<()> {
-          let p = pool.spin_read::<TPool>()?;  // NB: Threads hold read lock over pool.
+          let po = pool.spin_rd()?;  // NB: Threads hold read lock over pool.
           loop {
             let task = {
-              let mut state = p.state.lock();
+              let mut state = po.state.lock();
               match state.queue.pop_front() {
-                Some (j) => {p.running.fetch_add (1, Ordering::Relaxed); j}
+                Some (j) => {po.running.fetch_add (1, Ordering::Relaxed); j}
                 // NB: We only check `bye` when out of jobs, in order for jobs to run to completion at shutdown
-                None if p.bye.load (Ordering::Relaxed) => {break Re::Ok(())}
+                None if po.bye.load (Ordering::Relaxed) => {break Re::Ok(())}
                 None => {
-                  p.alarm.wait_for (&mut state, Duration::from_secs_f32 (0.31));
-                  if let Some (job) = state.queue.pop_front() {p.running.fetch_add (1, Ordering::Relaxed); job} else {continue}}}};
+                  po.alarm.wait_for (&mut state, Duration::from_secs_f32 (0.31));
+                  if let Some (job) = state.queue.pop_front() {po.running.fetch_add (1, Ordering::Relaxed); job} else {continue}}}};
             let rc = catch_unwind (AssertUnwindSafe (task));
-            let running = p.running.fetch_sub (1, Ordering::Relaxed);
+            let running = po.running.fetch_sub (1, Ordering::Relaxed);
             if running < 0 {log! (a 202, [=running])}
             match rc {
               Ok (Re::Ok(())) => {}
@@ -1636,10 +1636,10 @@ pub mod shuffled_iter {
           Err (err) => {log! (a 1, (tag) "] " [any_to_str (&*err)])}}}
       len}}
 
-  pub static _TPOOL: AArc = AArc::none();
+  pub static _TPOOL: AArc<TPool> = AArc::none();
 
   /// Shared thread pool.
-  pub fn tpool() -> Result<AReadGuard<'static, TPool>, AArcErr> {_TPOOL.spin_default()}
+  pub fn tpool() -> Result<AReadGuard<'static, TPool, TPool>, AArcErr> {_TPOOL.spid()}
 
   /// Post `task` to shared `TPOOL` if available, or run it on current thread otherwise.  
   /// Returns `false` if `task` was invoked directly.
@@ -1651,7 +1651,7 @@ pub mod shuffled_iter {
   /// * `spin` - Try to obtain `TPOOL` this many times before falling back to direct invocation of `task`.
   /// * `threads` - Use direct invocation if there is less than the given number of threads in the pool.
   pub fn tpost (spin: u32, threads: u8, task: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> Re<bool> {
-    let pool = _TPOOL.spidʳ::<TPool> (spin)?;
+    let pool = _TPOOL.spidʳ (spin)?;
     if pool.threadsⁿ() < threads as usize {
       task()?;
       Re::Ok (false)
@@ -1661,8 +1661,8 @@ pub mod shuffled_iter {
 
   #[test]
   fn jobs_n_gets_to_zero() {
-    let pool_arc = AArc::new (TPool::default());
-    let pool = pool_arc.spin_read::<TPool>().unwrap();
+    let pool_arc = AArc::<TPool>::new (TPool::default());
+    let pool = pool_arc.spin_rd().unwrap();
 
     // Sponsor a worker thread
     pool.sponsor ("test_worker".into()) .unwrap();
