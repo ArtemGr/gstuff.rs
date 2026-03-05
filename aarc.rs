@@ -1,5 +1,6 @@
 //! ### `AArc` Methods
 //! * `const fn none() -> Self` Creates empty, uninitialized `AArc`. Ideal for `static` declarations.
+//! * `fn empty() -> Self` Creates empty `AArc` with pre-allocated control block.
 //! * `fn any<T> (val: T) -> Self` Creates new type-erased `AArc` initialized with given value.
 //! * `fn new (val: T) -> Self` Creates new typed `AArc` initialized with given value.
 //! * `fn is_none -> bool` Returns `true` if empty or taken.
@@ -163,6 +164,14 @@ impl<C: ?Sized> AArc<C> {
   pub const fn none() -> Self {
     AArc {ptr: AtomicPtr::new (ptr::null_mut())}}
   
+  /// Creates an empty `AArc` with a pre-allocated control block.
+  /// Useful for creating connected empty arcs as one-shot channels.
+  pub fn empty() -> Self {
+    let cb = Box::into_raw (Box::new (ControlBlock {
+      state: AtomicU32::new (REF_INC | EMPTY_BIT),
+      data: UnsafeCell::new (None)}));
+    AArc {ptr: AtomicPtr::new (cb)}}
+
   /// Returns `true` if the `AArc` is uninitialized or its value has been taken.
   pub fn is_none (&self) -> bool {
     let ptr = self.ptr.load (Ordering::Acquire);
@@ -1419,4 +1428,18 @@ mod tests {
     print! ("v {} in {} checks; ", *guard, runs);
     assert! (6 <= runs && runs <= 12, "{}", runs);
     drop (guard);
+    handle.join().unwrap();}
+
+  #[test] fn empty_connected_channel() {
+    let aarc = AArc::<i32>::empty();
+    assert! (aarc.is_none());
+    let clone = aarc.clone();
+
+    let handle = thread::spawn (move || {
+      thread::sleep (Duration::from_millis (10));
+      let _ = clone.spin_set (42) .unwrap();});
+
+    // spin_rd will spin until EMPTY_BIT is cleared
+    let guard = aarc.spinʳ (-100) .unwrap();
+    assert_eq! (*guard, 42);
     handle.join().unwrap();}}
