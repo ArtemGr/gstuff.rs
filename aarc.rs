@@ -1,56 +1,62 @@
 //! ### `AArc` Methods
 //! * `const fn none() -> Self` Creates empty, uninitialized `AArc`. Ideal for `static` declarations.
-//! * `fn new<T> (val: T) -> Self` Creates new `AArc` initialized with given value.
-//! * `fn is_none (&self) -> bool` Returns `true` if empty or evicted.
-//! * `fn is_some (&self) -> bool` Returns `true` if currently holding a value.
-//! * `fn clone (&self) -> Self` Clones `AArc`, disconnected if empty.
-//! * `fn cloneᵗ (&self, spins: u32) -> Result<Self, AArcErr>`
+//! * `fn any<T> (val: T) -> Self` Creates new type-erased `AArc` initialized with given value.
+//! * `fn new (val: T) -> Self` Creates new typed `AArc` initialized with given value.
+//! * `fn is_none -> bool` Returns `true` if empty or taken.
+//! * `fn is_some -> bool` Returns `true` if currently holding a value.
+//! * `fn clone -> Self` Clones `AArc`, disconnected if empty.
+//! * `fn cloneᵗ -> Result<Self, AArcErr>`
 //!   Clones `AArc`, returning error if out of spins or on disconnect.
-//! * `fn evict / evictᵗ (&self) -> Result<(), AArcErr>` Evicts stored value, resetting `AArc` to empty.
+//! * `fn take -> Result<Option<Box<C>>, AArcErr>` Takes stored value, resetting `AArc` to empty.
 //! * `fn spini / spiniʳ<T> (&self, init: &mut dyn FnMut() -> Re<T>) -> Result<AReadGuard<'_, T>, AArcErr>`
 //!   Initializes `AArc` if empty, returns read guard. Spins if downcast fails (for `Any`).
-//! * `fn spid / spidʳ<T> (&self) -> Result<AReadGuard<'_, T>, AArcErr>`
+//! * `fn spid / spidʳ<T> -> Result<AReadGuard<'_, T>, AArcErr>`
 //!   Initializes with `T::default()` if empty. Spins if downcast fails (for `Any`).
-//! * `fn spidʷ<T> (&self, spins: u32) -> Result<AWriteGuard<'_, T>, AArcErr>`
+//! * `fn spidʷ<T> -> Result<AWriteGuard<'_, T>, AArcErr>`
 //!   Initializes with `T::default()` if empty, returning a write guard. Spins if downcast fails (for `Any`).
-//! * `fn spin_rd / spinʳ<T> (&self) -> Result<AReadGuard<'_, T>, AArcErr>`
+//! * `fn spin_rd / spinʳ<T> -> Result<AReadGuard<'_, T>, AArcErr>`
 //!   Acquires read lock and downcasts to `T`. Spins if downcast fails (for `Any`).
-//! * `fn spin_wr / spinʷ<T> (&self) -> Result<AWriteGuard<'_, T>, AArcErr>`
+//! * `fn spin_wr / spinʷ<T> -> Result<AWriteGuard<'_, T>, AArcErr>`
 //!   Acquires exclusive write lock and downcasts to `T`. Spins if downcast fails (for `Any`).
 //! * `fn spin_set / spinˢ<T> (&self, val: T) -> Result<AWriteGuard<'_, T>, AArcErr>`
 //!   Acquires write lock and sets new value of type `T`, returning typed guard.
-//! * `fn status (&self) -> (u32, &'static str)` Returns `(read_locks, status_string)`.
+//! * `fn spic_rd / spicʳ<T> (&self, cond: FnMut(&T) -> Re<bool>) -> Result<AReadGuard<'_, T>, AArcErr>`
+//!   Conditional read: acquires lock, checks `cond(&T)`; re-spins on `false`. Typed `AArc<T>` only.
+//! * `fn spic_wr / spicʷ<T> (&self, cond: FnMut(&T) -> Re<bool>) -> Result<AWriteGuard<'_, T>, AArcErr>`
+//!   Conditional write: acquires lock, checks `cond(&T)`; re-spins on `false`. Typed `AArc<T>` only.
+//! * `fn status -> (u32, &'static str)` Returns `(read_locks, status_string)`.
 //!
 //! ### Guard Methods
-//! * `AReadGuard::aarc (&self) -> AArc<C>` Recovers new `AArc` reference from read guard.
+//! * `AReadGuard::aarc -> AArc<C>` Recovers new `AArc` reference from read guard.
 //! * `AReadGuard::map<U> (self, f) -> AReadGuard<'_, U, C>` Maps the inner pointer to a new type.
 //! * `AReadGuard::try_map<U, E> (self, f) -> Result<AReadGuard<'_, U, C>, (Self, E)>`
 //! * `AReadGuard::wr / wrᵗ (self) -> Result<AWriteGuard<'_, T, C>, (Self, AArcErr)>` Upgrades to write lock.
-//! * `AWriteGuard::aarc (&self) -> AArc<C>` Recovers new `AArc` reference from write guard.
+//! * `AWriteGuard::aarc -> AArc<C>` Recovers new `AArc` reference from write guard.
 //! * `AWriteGuard::rd (self) -> AReadGuard<'_, T, C>` Downgrades to read lock.
 //! * `AWriteGuard::map<U> (self, f) -> AWriteGuard<'_, U, C>` Maps the inner pointer to a new type.
 //! * `AWriteGuard::try_map<U, E> (self, f) -> Result<AWriteGuard<'_, U, C>, (Self, E)>`
 //! * `AWriteGuard::set<U> (self, val: U) -> AWriteGuard<'_, U>`
 //!   Replaces stored value with new type `U` (or `T`) and returns new typed guard.
-//! * `AWriteGuard::evict (self)` Evicts stored value while holding write lock.
+//! * `AWriteGuard::take (self) -> Box<C>` Takes stored value while holding write lock.
 //!
 //! If a thread panics while holding a `AWriteGuard`, the stored data is
-//! evicted (`drop`ped) rather than poisoned. Other threads will see the `AArc` as empty.
+//! dropped rather than poisoned. Other threads will see the `AArc` as empty.
 //! `AReadGuard`s are safe to drop during a panic; they simply release the read lock.
 //! Leaking guards (e.g., via `std::mem::forget`) will permanently
 //! lock the `AArc`, preventing future reads or writes.
 
-use crate::{pause_yield, SPIN_OUT};
+use crate::{spin_yield, SPIN_OUT};
 use crate::re::Re;
+use fomat_macros::fomat;
 use std::any::Any;
 use std::cell::UnsafeCell;
-use std::hint::spin_loop;
 use std::marker::PhantomData;
 use std::mem::forget;
 use std::ops::{Deref, DerefMut};
 use std::ptr;
 use std::sync::atomic::{fence, AtomicPtr, AtomicU32, Ordering};
-use std::thread::panicking;
+use std::thread::{self, panicking};
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AArcErr {
@@ -70,6 +76,17 @@ impl std::fmt::Display for AArcErr {
       AArcErr::Init (s) => write! (fm, "init: {}", s)}}}
 
 impl std::error::Error for AArcErr {}
+
+pub struct SpinIt {spins: i32, burst: i32}
+impl SpinIt {
+  pub fn new (spins: i32) -> Self {Self {
+    spins, burst: if spins < 0 {11} else {spins.max (1)}}}}
+impl Iterator for SpinIt {
+  type Item = bool;
+  fn next (&mut self) -> Option<bool> {  // true = spin_yield, false = sleep
+    if 0 < self.burst {self.burst -= 1; Some (true)}
+    else if self.spins < 0 {self.spins += 3; self.burst = 9; Some (false)}
+    else {None}}}
 
 /// Atomic, type-erased, shared mutable container.
 ///
@@ -105,7 +122,7 @@ impl<C: ?Sized> Clone for AArc<C> {
   /// Clones the AArc.
   ///
   /// Disconnected when instance is completely uninitialized (e.g., from `AArc::none()` before first init).
-  /// Evicted (`EMPTY_BIT`) instances stay connected.
+  /// Taken (`EMPTY_BIT`) instances stay connected.
   fn clone (&self) -> Self {
     let ptr = self.ptr.load (Ordering::Acquire);
     if !ptr.is_null() {
@@ -129,11 +146,24 @@ impl<C: ?Sized> Default for AArc<C> {
   fn default() -> Self {
     Self::none()}}
 
+impl<T: std::fmt::Debug + Send + Sync + 'static> std::fmt::Debug for AArc<T> {
+  fn fmt (&self, fm: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let (readers, status) = self.status();
+    let mut dbg = fm.debug_struct ("AArc");
+    dbg.field ("readers", &readers);
+    if !status.is_empty() {dbg.field ("status", &status);}
+    if status == "null" || status == "empty" {return dbg.finish()}
+    // Opportunistically try to acquire a read lock with exactly 1 attempt (no waiting)
+    match self.spinʳ (1) {
+      Ok (guard) => dbg.field ("data", &*guard),
+      Err (_) => dbg.field ("data", &format_args! ("<locked or empty>"))};
+    dbg.finish()}}
+
 impl<C: ?Sized> AArc<C> {
   pub const fn none() -> Self {
     AArc {ptr: AtomicPtr::new (ptr::null_mut())}}
   
-  /// Returns `true` if the `AArc` is uninitialized or its value has been evicted.
+  /// Returns `true` if the `AArc` is uninitialized or its value has been taken.
   pub fn is_none (&self) -> bool {
     let ptr = self.ptr.load (Ordering::Acquire);
     if ptr.is_null() {return true}
@@ -155,8 +185,8 @@ impl<C: ?Sized> AArc<C> {
         None}}}
 
   /// Clones the AArc, returning an error if out of spins or if would disconnect.
-  pub fn cloneᵗ (&self, spins: u32) -> Result<Self, AArcErr> {
-    for spin in 0..spins {
+  pub fn cloneᵗ (&self, spins: i32) -> Result<Self, AArcErr> {
+    for yieldˀ in SpinIt::new (spins) {
       let ptr = self.ptr.load (Ordering::Acquire);
       if !ptr.is_null() {
         let cb = unsafe {&*ptr};
@@ -165,33 +195,29 @@ impl<C: ?Sized> AArc<C> {
         if cb.state.compare_exchange_weak (state, state + REF_INC, Ordering::Relaxed, Ordering::Relaxed) .is_ok() {
           return Ok (AArc {ptr: AtomicPtr::new (ptr)})}
         continue}
-      if spin % 10 == 0 {spin_loop()} else {pause_yield()}}
+      if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
     Err (AArcErr::Disconnect)}
 
-  pub fn evictᵗ (&self, spins: u32) -> Result<(), AArcErr> {
-    for spin in 0..spins {
+  pub fn take (&self, spins: i32) -> Result<Option<Box<C>>, AArcErr> {
+    for yieldˀ in SpinIt::new (spins) {
       let ptr = self.ptr.load (Ordering::Acquire);
-      if ptr.is_null() {return Ok (())}
+      if ptr.is_null() {return Ok (None)}
       let cb = unsafe {&*ptr};
       let state = cb.state.load (Ordering::Acquire);
       if state & WRITE_BIT == 0 && state & READ_MASK == 0 {
         if cb.state.compare_exchange_weak (state, state | WRITE_BIT, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
           let mut guard = InitGuard {cb: ptr, success: false, _marker: PhantomData};
           let old = unsafe {(*cb.data.get()).take()};
-          drop (old);
           guard.success = true;
           let mut current = cb.state.load (Ordering::Relaxed);
           loop {
             let new = (current | EMPTY_BIT) & !WRITE_BIT;
             match cb.state.compare_exchange_weak (current, new, Ordering::Release, Ordering::Relaxed) {
-              Ok (_) => return Ok (()),
+              Ok (_) => return Ok (old),
               Err (x) => current = x}}}
         continue}
-      if spin % 10 == 0 {spin_loop()} else {pause_yield()}}
+      if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
     Err (AArcErr::SpinOut)}
-
-  pub fn evict (&self) -> Result<(), AArcErr> {
-    self.evictᵗ (unsafe {SPIN_OUT})}
 
   /// Returns `(read_locks, status_string)`.
   /// Status is one of: "null", "write-locked", "empty", or "" (initialized, not write-locked).
@@ -209,15 +235,15 @@ impl<C: ?Sized> AArc<C> {
     (readers, status)}}
 
 impl AArc<dyn Any + Send + Sync> {
-  pub fn new<T: Send + Sync + 'static> (val: T) -> Self {
+  pub fn any<T: Send + Sync + 'static> (val: T) -> Self {
     let cb = Box::into_raw (Box::new (ControlBlock {
       state: AtomicU32::new (REF_INC),
       data: UnsafeCell::new (Some (Box::new (val) as Box<dyn Any + Send + Sync>))}));
     AArc {ptr: AtomicPtr::new (cb)}}
   
-  pub fn spiniʳ<T: Send + Sync + 'static> (&self, spins: u32, init: &mut dyn FnMut() -> Re<T>)
+  pub fn spiniʳ<T: Send + Sync + 'static> (&self, spins: i32, init: &mut dyn FnMut() -> Re<T>)
   -> Result<AReadGuard<'_, T>, AArcErr> {
-    for spin in 0..spins {
+    for yieldˀ in SpinIt::new (spins) {
       let ptr = self.ptr.load (Ordering::Acquire);
       if ptr.is_null() {
         if let Some (cb) = self.try_alloc_cb() {
@@ -239,7 +265,7 @@ impl AArc<dyn Any + Send + Sync> {
                   return Ok (AReadGuard {cb, ptr: typed_ref as *const T, _phantom: PhantomData})}}
               cb.state.fetch_sub (READ_INC, Ordering::Release);}
             else {continue}}}}
-      if spin % 10 == 0 {spin_loop()} else {pause_yield()}}
+      if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
     Err (AArcErr::SpinOut)}
 
   fn do_init<T: Send + Sync + 'static> (&self,
@@ -260,18 +286,18 @@ impl AArc<dyn Any + Send + Sync> {
         Ok (AReadGuard {cb, ptr, _phantom: PhantomData})}
       Re::Err (e) => Err (AArcErr::Init (e))}}
 
-  pub fn spidʳ<T: Default + Send + Sync + 'static> (&self, spins: u32) -> Result<AReadGuard<'_, T>, AArcErr> {
+  pub fn spidʳ<T: Default + Send + Sync + 'static> (&self, spins: i32) -> Result<AReadGuard<'_, T>, AArcErr> {
     self.spiniʳ (spins, &mut || Re::Ok (T::default()))}
 
   pub fn spini<T: Send + Sync + 'static> (&self, init: &mut dyn FnMut() -> Re<T>)
   -> Result<AReadGuard<'_, T>, AArcErr> {
-    self.spiniʳ (unsafe {SPIN_OUT}, init)}
+    self.spiniʳ (unsafe {SPIN_OUT as i32}, init)}
 
   pub fn spid<T: Default + Send + Sync + 'static> (&self) -> Result<AReadGuard<'_, T>, AArcErr> {
-    self.spidʳ (unsafe {SPIN_OUT})}
+    self.spidʳ (unsafe {SPIN_OUT as i32})}
 
-  pub fn spidʷ<T: Default + Send + Sync + 'static> (&self, spins: u32) -> Result<AWriteGuard<'_, T>, AArcErr> {
-    for spin in 0..spins {
+  pub fn spidʷ<T: Default + Send + Sync + 'static> (&self, spins: i32) -> Result<AWriteGuard<'_, T>, AArcErr> {
+    for yieldˀ in SpinIt::new (spins) {
       let ptr = self.ptr.load (Ordering::Acquire);
       if ptr.is_null() {
         if let Some (cb_ptr) = self.try_alloc_cb() {
@@ -305,13 +331,13 @@ impl AArc<dyn Any + Send + Sync> {
                   return Ok (AWriteGuard {cb: ptr, ptr: typed_mut as *mut T, _phantom: PhantomData})}}
               cb.state.fetch_and (!WRITE_BIT, Ordering::Release);}
             else {continue}}}}
-      if spin % 10 == 0 {spin_loop()} else {pause_yield()}}
+      if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
     Err (AArcErr::SpinOut)}
 
-  pub fn spinʳ<T: 'static> (&self, spins: u32) -> Result<AReadGuard<'_, T>, AArcErr> {
+  pub fn spinʳ<T: 'static> (&self, spins: i32) -> Result<AReadGuard<'_, T>, AArcErr> {
     // All expensive work (atomic CAS, downcast) happens here.
     // The returned AReadGuard holds *const T — zero-cost deref after this point.
-    for spin in 0..spins {
+    for yieldˀ in SpinIt::new (spins) {
       let ptr = self.ptr.load (Ordering::Acquire);
       if !ptr.is_null() {
         let cb = unsafe {&*ptr};
@@ -325,16 +351,16 @@ impl AArc<dyn Any + Send + Sync> {
                 return Ok (AReadGuard {cb, ptr: typed_ref as *const T, _phantom: PhantomData})}}
             cb.state.fetch_sub (READ_INC, Ordering::Release);}
           else {continue}}}
-      if spin % 10 == 0 {spin_loop()} else {pause_yield()}}
+      if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
     Err (AArcErr::SpinOut)}
 
   pub fn spin_rd<T: 'static> (&self) -> Result<AReadGuard<'_, T>, AArcErr> {
-    self.spinʳ (unsafe {SPIN_OUT})}
+    self.spinʳ (unsafe {SPIN_OUT as i32})}
 
-  pub fn spinʷ<T: 'static> (&self, spins: u32) -> Result<AWriteGuard<'_, T>, AArcErr> {
+  pub fn spinʷ<T: 'static> (&self, spins: i32) -> Result<AWriteGuard<'_, T>, AArcErr> {
     // All expensive work (atomic CAS, downcast) happens here.
     // The returned AWriteGuard holds *mut T — zero-cost deref after this point.
-    for spin in 0..spins {
+    for yieldˀ in SpinIt::new (spins) {
       let ptr = self.ptr.load (Ordering::Acquire);
       if !ptr.is_null() {
         let cb = unsafe {&*ptr};
@@ -347,14 +373,14 @@ impl AArc<dyn Any + Send + Sync> {
                 return Ok (AWriteGuard {cb, ptr: typed_mut as *mut T, _phantom: PhantomData})}}
             cb.state.fetch_and (!WRITE_BIT, Ordering::Release);}
           else {continue}}}
-      if spin % 10 == 0 {spin_loop()} else {pause_yield()}}
+      if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
     Err (AArcErr::SpinOut)}
 
   pub fn spin_wr<T: 'static> (&self) -> Result<AWriteGuard<'_, T>, AArcErr> {
-    self.spinʷ (unsafe {SPIN_OUT})}
+    self.spinʷ (unsafe {SPIN_OUT as i32})}
 
-  pub fn spinˢ<T: Send + Sync + 'static> (&self, spins: u32, val: T) -> Result<AWriteGuard<'_, T>, AArcErr> {
-    for spin in 0..spins {
+  pub fn spinˢ<T: Send + Sync + 'static> (&self, spins: i32, val: T) -> Result<AWriteGuard<'_, T>, AArcErr> {
+    for yieldˀ in SpinIt::new (spins) {
       let ptr = self.ptr.load (Ordering::Acquire);
       if ptr.is_null() {
         if let Some (cb_ptr) = self.try_alloc_cb() {
@@ -379,11 +405,11 @@ impl AArc<dyn Any + Send + Sync> {
             guard.success = true;
             return Ok (AWriteGuard {cb, ptr: data_ptr, _phantom: PhantomData})}
           continue}}
-      if spin % 10 == 0 {spin_loop()} else {pause_yield()}}
+      if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
     Err (AArcErr::SpinOut)}
 
   pub fn spin_set<T: Send + Sync + 'static> (&self, val: T) -> Result<AWriteGuard<'_, T>, AArcErr> {
-    self.spinˢ (unsafe {SPIN_OUT}, val)}}
+    self.spinˢ (unsafe {SPIN_OUT as i32}, val)}}
 
 impl<T: Send + Sync + 'static> AArc<T> {
   pub fn new (val: T) -> Self {
@@ -392,9 +418,9 @@ impl<T: Send + Sync + 'static> AArc<T> {
       data: UnsafeCell::new (Some (Box::new (val)))}));
     AArc {ptr: AtomicPtr::new (cb)}}
 
-  pub fn spiniʳ (&self, spins: u32, init: &mut dyn FnMut() -> Re<T>)
+  pub fn spiniʳ (&self, spins: i32, init: &mut dyn FnMut() -> Re<T>)
   -> Result<AReadGuard<'_, T, T>, AArcErr> {
-    for spin in 0..spins {
+    for yieldˀ in SpinIt::new (spins) {
       let ptr = self.ptr.load (Ordering::Acquire);
       if ptr.is_null() {
         if let Some (cb) = self.try_alloc_cb() {
@@ -415,7 +441,7 @@ impl<T: Send + Sync + 'static> AArc<T> {
                 return Ok (AReadGuard {cb, ptr: &**typed_box as *const T, _phantom: PhantomData})}
               cb.state.fetch_sub (READ_INC, Ordering::Release);}
             else {continue}}}}
-      if spin % 10 == 0 {spin_loop()} else {pause_yield()}}
+      if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
     Err (AArcErr::SpinOut)}
 
   fn do_init (&self, cb_ptr: *mut ControlBlock<T>, init: &mut dyn FnMut() -> Re<T>)
@@ -435,17 +461,17 @@ impl<T: Send + Sync + 'static> AArc<T> {
         Ok (AReadGuard {cb, ptr, _phantom: PhantomData})}
       Re::Err (e) => Err (AArcErr::Init (e))}}
 
-  pub fn spidʳ (&self, spins: u32) -> Result<AReadGuard<'_, T, T>, AArcErr> where T: Default {
+  pub fn spidʳ (&self, spins: i32) -> Result<AReadGuard<'_, T, T>, AArcErr> where T: Default {
     self.spiniʳ (spins, &mut || Re::Ok (T::default()))}
 
   pub fn spini (&self, init: &mut dyn FnMut() -> Re<T>) -> Result<AReadGuard<'_, T, T>, AArcErr> {
-    self.spiniʳ (unsafe {SPIN_OUT}, init)}
+    self.spiniʳ (unsafe {SPIN_OUT as i32}, init)}
 
   pub fn spid (&self) -> Result<AReadGuard<'_, T, T>, AArcErr> where T: Default {
-    self.spidʳ (unsafe {SPIN_OUT})}
+    self.spidʳ (unsafe {SPIN_OUT as i32})}
 
-  pub fn spidʷ (&self, spins: u32) -> Result<AWriteGuard<'_, T, T>, AArcErr> where T: Default {
-    for spin in 0..spins {
+  pub fn spidʷ (&self, spins: i32) -> Result<AWriteGuard<'_, T, T>, AArcErr> where T: Default {
+    for yieldˀ in SpinIt::new (spins) {
       let ptr = self.ptr.load (Ordering::Acquire);
       if ptr.is_null() {
         if let Some (cb_ptr) = self.try_alloc_cb() {
@@ -476,11 +502,11 @@ impl<T: Send + Sync + 'static> AArc<T> {
                 return Ok (AWriteGuard {cb: ptr, ptr: &mut **typed_box as *mut T, _phantom: PhantomData})}
               cb.state.fetch_and (!WRITE_BIT, Ordering::Release);}
             else {continue}}}}
-      if spin % 10 == 0 {spin_loop()} else {pause_yield()}}
+      if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
     Err (AArcErr::SpinOut)}
 
-  pub fn spinʳ (&self, spins: u32) -> Result<AReadGuard<'_, T, T>, AArcErr> {
-    for spin in 0..spins {
+  pub fn spinʳ (&self, spins: i32) -> Result<AReadGuard<'_, T, T>, AArcErr> {
+    for yieldˀ in SpinIt::new (spins) {
       let ptr = self.ptr.load (Ordering::Acquire);
       if !ptr.is_null() {
         let cb = unsafe {&*ptr};
@@ -493,14 +519,43 @@ impl<T: Send + Sync + 'static> AArc<T> {
               return Ok (AReadGuard {cb, ptr: &**typed_box as *const T, _phantom: PhantomData})}
             cb.state.fetch_sub (READ_INC, Ordering::Release);}
           else {continue}}}
-      if spin % 10 == 0 {spin_loop()} else {pause_yield()}}
+      if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
     Err (AArcErr::SpinOut)}
 
   pub fn spin_rd (&self) -> Result<AReadGuard<'_, T, T>, AArcErr> {
-    self.spinʳ (unsafe {SPIN_OUT})}
+    self.spinʳ (unsafe {SPIN_OUT as i32})}
 
-  pub fn spinʷ (&self, spins: u32) -> Result<AWriteGuard<'_, T, T>, AArcErr> {
-    for spin in 0..spins {
+  pub fn spicʳ (&self, spins: i32, cond: &mut dyn FnMut(&T) -> Re<bool>) -> Result<AReadGuard<'_, T, T>, AArcErr> {
+    let mut spinc = SpinIt::new (spins);
+    while let Some (yieldˀ) = spinc.next() {
+      let ptr = self.ptr.load (Ordering::Acquire);
+      if !ptr.is_null() {
+        let cb = unsafe {&*ptr};
+        let state = cb.state.load (Ordering::Acquire);
+        if state & WRITE_BIT == 0 && state & EMPTY_BIT == 0 {
+          if (state & READ_MASK) == READ_MASK {return Err (AArcErr::ReaderOverflow)}
+          if cb.state.compare_exchange_weak (state, state + READ_INC, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
+            let data_ref = unsafe {&*cb.data.get()};
+            if let Some (typed_box) = data_ref {
+              match cond (&**typed_box) {
+                Re::Ok (true) => return Ok (AReadGuard {cb, ptr: &**typed_box as *const T, _phantom: PhantomData}),
+                Re::Ok (false) => {
+                  cb.state.fetch_sub (READ_INC, Ordering::Release);
+                  if spins < 0 {spinc.burst = 0;}},
+                Re::Err (e) => {
+                  cb.state.fetch_sub (READ_INC, Ordering::Release);
+                  return Err (AArcErr::Init (e));}}}
+            else {
+              cb.state.fetch_sub (READ_INC, Ordering::Release);}
+          } else {continue}}}
+      if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
+    Err (AArcErr::SpinOut)}
+
+  pub fn spic_rd (&self, cond: &mut dyn FnMut(&T) -> Re<bool>) -> Result<AReadGuard<'_, T, T>, AArcErr> {
+    self.spicʳ (unsafe {SPIN_OUT as i32}, cond)}
+
+  pub fn spinʷ (&self, spins: i32) -> Result<AWriteGuard<'_, T, T>, AArcErr> {
+    for yieldˀ in SpinIt::new (spins) {
       let ptr = self.ptr.load (Ordering::Acquire);
       if !ptr.is_null() {
         let cb = unsafe {&*ptr};
@@ -512,14 +567,42 @@ impl<T: Send + Sync + 'static> AArc<T> {
               return Ok (AWriteGuard {cb, ptr: &mut **typed_box as *mut T, _phantom: PhantomData})}
             cb.state.fetch_and (!WRITE_BIT, Ordering::Release);}
           else {continue}}}
-      if spin % 10 == 0 {spin_loop()} else {pause_yield()}}
+      if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
     Err (AArcErr::SpinOut)}
 
   pub fn spin_wr (&self) -> Result<AWriteGuard<'_, T, T>, AArcErr> {
-    self.spinʷ (unsafe {SPIN_OUT})}
+    self.spinʷ (unsafe {SPIN_OUT as i32})}
 
-  pub fn spinˢ (&self, spins: u32, val: T) -> Result<AWriteGuard<'_, T, T>, AArcErr> {
-    for spin in 0..spins {
+  pub fn spicʷ (&self, spins: i32, cond: &mut dyn FnMut(&T) -> Re<bool>) -> Result<AWriteGuard<'_, T, T>, AArcErr> {
+    let mut spinc = SpinIt::new (spins);
+    while let Some (yieldˀ) = spinc.next() {
+      let ptr = self.ptr.load (Ordering::Acquire);
+      if !ptr.is_null() {
+        let cb = unsafe {&*ptr};
+        let state = cb.state.load (Ordering::Acquire);
+        if state & WRITE_BIT == 0 && state & READ_MASK == 0 && state & EMPTY_BIT == 0 {
+          if cb.state.compare_exchange_weak (state, state | WRITE_BIT, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+            let data_mut = unsafe {&mut *cb.data.get()};
+            if let Some (typed_box) = data_mut {
+              match cond (&**typed_box) {
+                Re::Ok (true) => return Ok (AWriteGuard {cb, ptr: &mut **typed_box as *mut T, _phantom: PhantomData}),
+                Re::Ok (false) => {
+                  cb.state.fetch_and (!WRITE_BIT, Ordering::Release);
+                  if spins < 0 {spinc.burst = 0;}},
+                Re::Err (e) => {
+                  cb.state.fetch_and (!WRITE_BIT, Ordering::Release);
+                  return Err (AArcErr::Init (e));}}}
+            else {
+              cb.state.fetch_and (!WRITE_BIT, Ordering::Release);}
+          } else {continue}}}
+      if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
+    Err (AArcErr::SpinOut)}
+
+  pub fn spic_wr (&self, cond: &mut dyn FnMut(&T) -> Re<bool>) -> Result<AWriteGuard<'_, T, T>, AArcErr> {
+    self.spicʷ (unsafe {SPIN_OUT as i32}, cond)}
+
+  pub fn spinˢ (&self, spins: i32, val: T) -> Result<AWriteGuard<'_, T, T>, AArcErr> {
+    for yieldˀ in SpinIt::new (spins) {
       let ptr = self.ptr.load (Ordering::Acquire);
       if ptr.is_null() {
         if let Some (cb_ptr) = self.try_alloc_cb() {
@@ -541,11 +624,11 @@ impl<T: Send + Sync + 'static> AArc<T> {
             guard.success = true;
             return Ok (AWriteGuard {cb, ptr: data_ptr, _phantom: PhantomData})}
           continue}}
-      if spin % 10 == 0 {spin_loop()} else {pause_yield()}}
+      if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
     Err (AArcErr::SpinOut)}
 
   pub fn spin_set (&self, val: T) -> Result<AWriteGuard<'_, T, T>, AArcErr> {
-    self.spinˢ (unsafe {SPIN_OUT}, val)}
+    self.spinˢ (unsafe {SPIN_OUT as i32}, val)}
 }
 
 struct InitGuard<'a, C: ?Sized> {
@@ -609,9 +692,9 @@ impl<'a, T: ?Sized, C: ?Sized> AReadGuard<'a, T, C> {
   /// **Warning:** If two threads hold read locks and both attempt to upgrade, 
   /// they will spin-out, as neither would release their read lock.
   /// On failure the read guard is returned in the error tuple.
-  pub fn wrᵗ (self, spins: u32) -> Result<AWriteGuard<'a, T, C>, (Self, AArcErr)> {
+  pub fn wrᵗ (self, spins: i32) -> Result<AWriteGuard<'a, T, C>, (Self, AArcErr)> {
     let cb = unsafe {&*self.cb};
-    for spin in 0..spins {
+    for yieldˀ in SpinIt::new (spins) {
       let state = cb.state.load (Ordering::Acquire);
       if (state & READ_MASK) == READ_INC {
         if cb.state.compare_exchange_weak (state, (state - READ_INC) | WRITE_BIT, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
@@ -619,11 +702,11 @@ impl<'a, T: ?Sized, C: ?Sized> AReadGuard<'a, T, C> {
           let cb_ptr = self.cb;
           forget (self);
           return Ok (AWriteGuard {cb: cb_ptr, ptr, _phantom: PhantomData})}}
-      if spin % 10 == 0 {spin_loop()} else {pause_yield()}}
+      if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
     Err ((self, AArcErr::SpinOut))}
 
   pub fn wr (self) -> Result<AWriteGuard<'a, T, C>, (Self, AArcErr)> {
-    self.wrᵗ (unsafe {SPIN_OUT})}}
+    self.wrᵗ (unsafe {SPIN_OUT as i32})}}
 
 impl<'a, T: ?Sized, C: ?Sized> Drop for AReadGuard<'a, T, C> {
   fn drop (&mut self) {
@@ -682,16 +765,16 @@ impl<'a, T: ?Sized, C: ?Sized> AWriteGuard<'a, T, C> {
         Ok (AWriteGuard {cb, ptr, _phantom: PhantomData})}
       Err (e) => Err ((self, e))}}
 
-  pub fn evict (self) {
+  pub fn take (self) -> Box<C> {
     let cb = unsafe {&*self.cb};
     let old = unsafe {(*cb.data.get()).take()};
-    drop (old);
     let mut current = cb.state.load (Ordering::Relaxed);
     loop {
       let new = (current | EMPTY_BIT) & !WRITE_BIT;
       match cb.state.compare_exchange_weak (current, new, Ordering::Release, Ordering::Relaxed) {
         Ok (_) => break, Err (x) => current = x}}
-    forget (self)}}
+    forget (self);
+    old.unwrap()}}
 
 impl<'a, T: ?Sized> AWriteGuard<'a, T> {
   pub fn set<U: Send + Sync + 'static> (self, val: U) -> AWriteGuard<'a, U> {
@@ -704,8 +787,7 @@ impl<'a, T: ?Sized> AWriteGuard<'a, T> {
     cb.state.fetch_and (!EMPTY_BIT, Ordering::Release);
     let guard = AWriteGuard {cb: self.cb, ptr, _phantom: PhantomData};
     forget (self);
-    guard}
-}
+    guard}}
 
 impl<'a, T: Send + Sync + 'static> AWriteGuard<'a, T, T> {
   pub fn set (self, val: T) -> AWriteGuard<'a, T, T> {
@@ -714,8 +796,7 @@ impl<'a, T: Send + Sync + 'static> AWriteGuard<'a, T, T> {
     cb.state.fetch_and (!EMPTY_BIT, Ordering::Release);
     let guard = AWriteGuard {cb: self.cb, ptr, _phantom: PhantomData};
     forget (self);
-    guard}
-}
+    guard}}
 
 impl<'a, T: ?Sized, C: ?Sized> Drop for AWriteGuard<'a, T, C> {
   fn drop (&mut self) {
@@ -734,11 +815,12 @@ impl<'a, T: ?Sized, C: ?Sized> Drop for AWriteGuard<'a, T, C> {
 #[cfg(test)]
 mod tests {
   extern crate test;
-  use super::*;
+  use crate::fail;
   use std::panic::{self, UnwindSafe};
   use std::sync::{Arc, Mutex, RwLock};
   use std::sync::atomic::AtomicUsize;
   use std::thread;
+  use super::*;
   type BoxFnI32 = Box<dyn Fn() -> i32 + Send + Sync>;
   type BoxFnMutI32 = Box<dyn FnMut() -> i32 + Send + Sync>;
   type BoxFnReI32 = Box<dyn Fn() -> Result<i32, AArcErr> + Send + Sync>;
@@ -796,7 +878,6 @@ mod tests {
 
   #[test] fn re_init() {
     use crate::fail;
-    use fomat_macros::fomat;
 
     let aarc: AArc = AArc::none();
     let err = aarc.spini::<i32> (&mut || {fail! ("init failed")}) .unwrap_err();
@@ -966,7 +1047,7 @@ mod tests {
     assert_eq! (err, "empty");
     assert_eq! (recovered_guard.len(), 0)}
 
-  #[test] fn evict() {
+  #[test] fn take() {
     let aarc: AArc = AArc::none();
     assert! (aarc.is_none());
     let _ = aarc.spid::<i32>().unwrap();
@@ -976,9 +1057,10 @@ mod tests {
     assert_eq! (*guard, 0);
     drop (guard);
 
-    aarc.evict().unwrap();  // Drops stored i32, sets EMPTY_BIT; control block stays allocated/connected.
+    let val = aarc.take(100).unwrap();  // Takes stored i32, sets EMPTY_BIT; control block stays allocated/connected.
+    assert! (val.is_some());
     assert! (aarc.is_none());
-    assert_eq! (aarc.status(), (0, "empty"));  // Evicted state has no active locks.
+    assert_eq! (aarc.status(), (0, "empty"));  // Taken state has no active locks.
 
     // Reads spin-out while empty (EMPTY_BIT set, not null pointer).
     let err = aarc.spinʳ::<i32> (10) .err().unwrap();
@@ -989,12 +1071,12 @@ mod tests {
     assert! (aarc.is_some());
     assert_eq! (*guard, 0);}
 
-  #[test] fn clone_after_evict_stays_connected() {
+  #[test] fn clone_after_take_stays_connected() {
     let aarc: AArc = AArc::none();
     let _ = aarc.spin_set (1i32) .unwrap();
 
-    // Eviction makes the slot empty (EMPTY_BIT) but does not detach/clear ptr
-    aarc.evict().unwrap();
+    // Taking makes the slot empty (EMPTY_BIT) but does not detach/clear ptr
+    aarc.take(100).unwrap();
 
     // `clone()` remains connected because ptr is non-null
     let clone = aarc.clone();
@@ -1016,18 +1098,18 @@ mod tests {
     panic::set_hook (prev_hook);
     res}
 
-  #[test] fn evict_on_panic() {
+  #[test] fn take_on_panic() {
     let aarc: AArc = AArc::none();
     let _ = aarc.spid::<i32>().unwrap();
 
     let res = catch_unwind_silent (|| {
       let _guard = aarc.spin_wr::<i32>().unwrap();
       panic! ("test panic");});
-    // Unwind: AWriteGuard::drop detects panicking()==true, evicts data (drops i32, sets EMPTY_BIT).
+    // Unwind: AWriteGuard::drop detects panicking()==true, drops data, sets EMPTY_BIT.
 
     assert! (res.is_err());
 
-    // Unlike std::Mutex, no poisoning — just eviction. AArc is now empty, not broken.
+    // Unlike std::Mutex, no poisoning — just dropped. AArc is now empty, not broken.
     assert_eq! (aarc.status(), (0, "empty"));  // Write lock is cleared during panic unwind.
     let err = aarc.spinʳ::<i32> (10) .err().unwrap();
     assert_eq! (err, AArcErr::SpinOut);
@@ -1062,15 +1144,15 @@ mod tests {
     let guard = aarc.spin_set (42i32) .unwrap();
     assert_eq! (*guard, 42);}
 
-  #[test] fn evict_stuck_on_panic() {
+  #[test] fn take_stuck_on_panic() {
     let aarc: AArc = AArc::none();
     let _ = aarc.spin_set (PanicOnDrop) .unwrap();
 
     let res = catch_unwind_silent (|| {
-      // evictᵗ acquires WRITE_BIT, .take()s the value, then drop(old)
+      // take acquires WRITE_BIT, .take()s the value, then drop(old)
       // panics from PanicOnDrop. InitGuard unwinds: data already .take()n
       // so cleanup finds None (no second PanicOnDrop drop → no abort).
-      let _ = aarc.evict();});
+      let _ = aarc.take(100);});
 
     assert! (res.is_err());
 
@@ -1224,7 +1306,7 @@ mod tests {
   #[test] fn benign_clone_drops() {
     let aarc: AArc = AArc::none();
     let _ = aarc.spin_set (String::from ("hello")) .unwrap();
-    // Clones share the same control block whenever ptr is non-null (including evicted/EMPTY_BIT states)
+    // Clones share the same control block whenever ptr is non-null (including taken/EMPTY_BIT states)
     let clone1 = aarc.clone();
     let clone2 = aarc.clone();
     drop (clone1);  // Refcount 3→2; data untouched, only ref bookkeeping.
@@ -1251,11 +1333,17 @@ mod tests {
 
   #[test] fn typed_aarc() {
     let aarc = AArc::<i32>::none();
+    assert_eq! (fomat! ([aarc]), "AArc { readers: 0, status: \"null\" }");
     let mut guard = aarc.spidʷ (100) .unwrap();
     assert_eq! (*guard, 0);
+    assert_eq! (fomat! ([aarc]), "AArc { readers: 0, status: \"write-locked\", data: <locked or empty> }");
     *guard = 42;
     let read_guard = guard.rd();
-    assert_eq! (*read_guard, 42)}
+    assert_eq! (*read_guard, 42);
+    assert_eq! (fomat! ([aarc]), "AArc { readers: 1, data: 42 }");
+    drop (read_guard);
+    aarc.take(100).unwrap();
+    assert_eq! (fomat! ([aarc]), "AArc { readers: 0, status: \"empty\" }")}
 
   #[test] fn upgrade_spin_out() {
     let aarc: AArc = AArc::none();
@@ -1269,4 +1357,66 @@ mod tests {
     assert_eq! (*recovered_guard, 0);
     drop (recovered_guard);
     drop (read_guard2);
-    assert_eq! (aarc.status(), (0, ""))}}
+    assert_eq! (aarc.status(), (0, ""))}
+
+  #[test] fn conditional_spins() {
+    let aarc = AArc::<i32>::none();
+    let _ = aarc.spin_set (0) .unwrap();
+
+    // spicʳ: condition immediately true → read guard
+    let guard = aarc.spicʳ (-1, &mut |v| Re::Ok (*v == 0)) .unwrap();
+    assert_eq! (*guard, 0);
+    drop (guard);
+
+    // spicʳ: condition always false → spin-out
+    let mut runs = 0;
+    let err = aarc.spicʳ (-4, &mut |v| {runs += 1; Re::Ok (100 < *v)}) .err().unwrap();
+    assert_eq! (err, AArcErr::SpinOut);
+    assert_eq! (runs, 3);
+
+    // spicʳ: condition error → propagated as AArcErr::Init
+    runs = 0;
+    let err = aarc.spicʳ (-1, &mut |_| {runs += 1; fail! ("cond err")}) .err().unwrap();
+    match err {
+      AArcErr::Init (msg) => assert! (msg.ends_with ("] cond err")),
+      _ => panic! ("Expected AArcErr::Init")}
+    assert_eq! (runs, 1);
+
+    // spicʷ: condition true → write guard, mutate
+    runs = 0;
+    let mut guard = aarc.spicʷ (-3, &mut |v| {runs += 1; Re::Ok (*v == 0)}) .unwrap();
+    *guard = 42;
+    drop (guard);
+    assert_eq! (runs, 1);
+
+    // spicʷ: condition false (value changed) → spin-out
+    runs = 0;
+    let err = aarc.spicʷ (-1, &mut |v| {runs += 1; Re::Ok (*v == 0)}) .err().unwrap();
+    assert_eq! (err, AArcErr::SpinOut);
+    assert_eq! (runs, 2);
+
+    // Cross-thread: writer updates value, conditional reader waits with negative spins
+    let aarc2 = AArc::<i32>::none();
+    let _ = aarc2.spin_set (0) .unwrap();
+    let clone = aarc2.clone();
+    let handle = thread::spawn (move || {
+      loop {
+        thread::sleep (Duration::from_millis (10));
+        let mut guard = clone.spin_wr().unwrap();
+        *guard += 1;
+        if *guard == 30 {break}}});
+
+    // Positive 30 spins 30 times in one burst, too fast to observe v 20
+    runs = 0;
+    let guard = aarc2.spicʳ (30, &mut |v| {runs += 1; Re::Ok (20 <= *v)});
+    assert! (guard.is_err());
+    assert_eq! (runs, 30);
+
+    // Negative -30 spins for ~30 centiseconds; condition re-checked once per 30ms sleep cycle
+    runs = 0;
+    let guard = aarc2.spicʳ (-30, &mut |v| {runs += 1; Re::Ok (20 <= *v)}) .unwrap();
+    assert! (20 <= *guard);
+    print! ("v {} in {} checks; ", *guard, runs);
+    assert! (6 <= runs && runs <= 12, "{}", runs);
+    drop (guard);
+    handle.join().unwrap();}}

@@ -438,10 +438,10 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
       ManuallyDrop::drop (&mut self.db)}}}
 
   pub fn run2rows (db: &SConn, sql: &[u8]) -> Re<SqRows> {
-    let dbʹ = db.spin_read::<TSafe<rusqlite::Connection>>()?;
+    let dbʹ = db.spin_rd::<TSafe<rusqlite::Connection>>()?;
     let stmt: CachedStatement<'static> = unsafe {transmute (dbʹ.0.prepare_cached (b2s (sql))?)};
-    let st = AArc::new (TSafe (stmt));
-    let mut st_guard = st.spin_write::<TSafe<CachedStatement<'static>>>()?;
+    let st = AArc::any (TSafe (stmt));
+    let mut st_guard = st.spin_wr::<TSafe<CachedStatement<'static>>>()?;
     let rs = st_guard.0.query([])?;
     Re::Ok (unsafe {SqRows::new (
       transmute (rs),
@@ -464,11 +464,11 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
     ($db: expr, $params: expr, $($fq: tt)+) => {{
       let mut sql = smallvec::SmallVec::<[u8; 256]>::new();
       fomat_macros::wite! (&mut sql, $($fq)+)?;
-      let dbʹ = $db.spin_write::<$crate::TSafe<rusqlite::Connection>>()?;
+      let dbʹ = $db.spin_wr::<$crate::TSafe<rusqlite::Connection>>()?;
       let stmt: rusqlite::CachedStatement<'static> = unsafe {
         core::mem::transmute (dbʹ.0.prepare_cached (core::str::from_utf8_unchecked (&sql))?)};
-      let st = $crate::aarc::AArc::new ($crate::TSafe (stmt));
-      let mut st_guard = st.spin_write::<$crate::TSafe<rusqlite::CachedStatement<'static>>>()?;
+      let st = $crate::aarc::AArc::any ($crate::TSafe (stmt));
+      let mut st_guard = st.spin_wr::<$crate::TSafe<rusqlite::CachedStatement<'static>>>()?;
       let rs = st_guard.0.query ($params)?;
       unsafe {$crate::lines::sq::SqRows::new (
         core::mem::transmute (rs),
@@ -479,7 +479,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
     ($db: expr, $params: expr, $($fq: tt)+) => {{
       let mut buf = smallvec::SmallVec::<[u8; 256]>::new();
       fomat_macros::wite! (&mut buf, $($fq)+)?;
-      let dbʹ = $db.spin_write::<$crate::TSafe<rusqlite::Connection>>()?;
+      let dbʹ = $db.spin_wr::<$crate::TSafe<rusqlite::Connection>>()?;
       let mut sth = dbʹ.0.prepare_cached (unsafe {core::str::from_utf8_unchecked (&buf)})?;
       sth.execute ($params)?}};
 
@@ -501,7 +501,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
       fmt::Result::Ok(())}}
 
   pub fn run2js (db: &SConn, sql: &[u8]) -> Re<Vec<IndexMap<InlinableString, Json>>> {
-    let dbʹ = db.spin_read::<TSafe<rusqlite::Connection>>()?;
+    let dbʹ = db.spin_rd::<TSafe<rusqlite::Connection>>()?;
     let mut st = dbʹ.0.prepare (b2s (sql))?;
     let cols = st.column_count();
     let mut cnames = Vec::with_capacity (cols);
@@ -526,7 +526,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
   /// Should [prefer exclusive access](https://github.com/rusqlite/rusqlite/issues/342#issuecomment-592661330), `spin_write`,
   /// unless we're using the database from a single thread anyway.
   pub type SConn = AArc;
-  pub fn sconn (db: Connection) -> SConn {AArc::new (TSafe (db))}}
+  pub fn sconn (db: Connection) -> SConn {AArc::any (TSafe (db))}}
 
 #[cfg(feature = "sqlite")] pub mod csq {
   // cf. https://www.sqlite.org/vtab.html, https://sqlite.org/src/file?name=ext/misc/csv.c&ci=trunk
@@ -889,6 +889,11 @@ pub struct Stat {
   pub lmc: u64,
   pub dir: bool,
   pub link: bool}
+
+impl Stat {
+  pub fn ageᶜ (&self, mut cs: i64) -> i64 {
+    if cs == 0 {cs = (crate::now_ms() / 10) as i64}
+    cs - self.lmc as i64}}
 
 #[cfg(unix)] pub fn fstat (fd: RawFd) -> Re<Stat> {
   let mut buf: libc::stat = unsafe {MaybeUninit::zeroed().assume_init()};

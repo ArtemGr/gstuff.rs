@@ -936,7 +936,7 @@ impl Iterator for ProcIt {
 
 pub static mut SPIN_OUT: u32 = 1234567;
 
-fn pause_yield() {
+fn spin_yield() {
   spin_loop();
   thread::yield_now();  // cf. https://stackoverflow.com/a/69847156/257568
   spin_loop()}
@@ -983,7 +983,7 @@ impl<T> IniMutex<T> {
   pub fn spin (&self) -> IniMutexGuard<'_, T> {
     loop {
       if let Ok (lock) = self.lock() {return lock}
-      pause_yield()}}
+      spin_yield()}}
 
   /// “spin-out” if out of `spins`
   pub fn spinᵗ (&self, spins: u32) -> Result<IniMutexGuard<'_, T>, &'static str> {
@@ -1017,7 +1017,7 @@ impl<T> IniMutex<T> {
     loop {
       match self.lock_init (init) {
         Ok (lock) => break Ok (lock),
-        Err (LockInitErr::Lock (_l)) => pause_yield(),
+        Err (LockInitErr::Lock (_l)) => spin_yield(),
         Err (LockInitErr::Init (err)) => break Err (err)}}}
 
   /// “spin-out” if out of `spins`
@@ -1074,7 +1074,7 @@ impl<T: Default> IniMutex<T> {
   pub fn spin_default (&self) -> IniMutexGuard<'_, T> {
     loop {
       if let Ok (lock) = self.lock_default() {return lock}
-      pause_yield()}}
+      spin_yield()}}
 
   pub fn spin_defaultᵗ (&self, mut spins: u32) -> Result<IniMutexGuard<'_, T>, i8> {
     loop {
@@ -1097,9 +1097,9 @@ impl<T> DerefMut for IniMutexGuard<'_, T> {
     unsafe {&mut *vc.as_mut_ptr()}}}
 
 impl<T: fmt::Debug> fmt::Debug for IniMutexGuard<'_, T> {
-  fn fmt (&self, ft: &mut fmt::Formatter) -> fmt::Result {
+  fn fmt (&self, fm: &mut fmt::Formatter) -> fmt::Result {
     let vc = unsafe {&mut *self.lo.vc.get()};
-    unsafe {fmt::Debug::fmt (&*vc.as_ptr(), ft)}}}
+    unsafe {fmt::Debug::fmt (&*vc.as_ptr(), fm)}}}
 
 impl<T: fmt::Display> fmt::Display for IniMutexGuard<'_, T> {
   fn fmt (&self, fm: &mut fmt::Formatter) -> fmt::Result {
@@ -1650,7 +1650,7 @@ pub mod shuffled_iter {
   /// 
   /// * `spin` - Try to obtain `TPOOL` this many times before falling back to direct invocation of `task`.
   /// * `threads` - Use direct invocation if there is less than the given number of threads in the pool.
-  pub fn tpost (spin: u32, threads: u8, task: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> Re<bool> {
+  pub fn tpost (spin: i32, threads: u8, task: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> Re<bool> {
     let pool = _TPOOL.spidʳ (spin)?;
     if pool.threadsⁿ() < threads as usize {
       task()?;
