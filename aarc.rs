@@ -637,8 +637,7 @@ impl<T: Send + Sync + 'static> AArc<T> {
     Err (AArcErr::SpinOut)}
 
   pub fn spin_set (&self, val: T) -> Result<AWriteGuard<'_, T, T>, AArcErr> {
-    self.spinˢ (unsafe {SPIN_OUT as i32}, val)}
-}
+    self.spinˢ (unsafe {SPIN_OUT as i32}, val)}}
 
 struct InitGuard<'a, C: ?Sized> {
   cb: *mut ControlBlock<C>,
@@ -821,7 +820,7 @@ impl<'a, T: ?Sized, C: ?Sized> Drop for AWriteGuard<'a, T, C> {
     } else {
       cb.state.fetch_and (!WRITE_BIT, Ordering::Release);}}}
 
-#[cfg(test)]
+#[cfg(all(test, feature = "nightly", feature = "re", feature = "fomat-macros"))]
 mod tests {
   extern crate test;
   use crate::fail;

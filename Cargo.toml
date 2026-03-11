@@ -1,6 +1,6 @@
 [package]
 name = "gstuff"
-version = "0.8.27"
+version = "0.8.28"
 edition = "2021"
 authors = ["ArtemGr <artemciy@gmail.com>"]
 

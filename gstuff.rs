@@ -124,6 +124,7 @@ pub mod lines;
 #[cfg(feature = "link")]
 pub mod link;
 
+#[cfg(all(feature = "re"))]
 pub mod aarc;
 
 // --- status line -------
@@ -1659,75 +1660,112 @@ pub mod shuffled_iter {
       pool.post (task)?;
       Re::Ok (true)}}
 
-  #[test]
-  fn jobs_n_gets_to_zero() {
-    let pool_arc = AArc::<TPool>::new (TPool::default());
-    let pool = pool_arc.spin_rd().unwrap();
+  #[cfg(all(test, feature = "nightly", feature = "re"))]
+  mod tests {
+    use super::*;
+    use crate::aarc::AArc;
+    use crate::re::Re;
+    use std::thread;
+    use std::time::Duration;
 
-    // Sponsor a worker thread
-    pool.sponsor ("test_worker".into()) .unwrap();
+    #[test]
+    fn jobs_n_gets_to_zero() {
+      let pool_arc = AArc::<TPool>::new (TPool::default());
+      let pool = pool_arc.spin_rd().unwrap();
 
-    // Initially, jobs should be 0
-    assert_eq! (pool.jobsⁿ().unwrap(), 0);
+      // Sponsor a worker thread
+      pool.sponsor ("test_worker".into()) .unwrap();
 
-    // Post a task that sleeps for a short duration
-    pool.post (Box::new (|| {
-      thread::sleep (Duration::from_millis (50));
-      Re::Ok(())})) .unwrap();
+      // Initially, jobs should be 0
+      assert_eq! (pool.jobsⁿ().unwrap(), 0);
 
-    // Right after posting, jobsⁿ should be at least 1 (queued or running)
-    assert_eq! (1, pool.jobsⁿ().unwrap());
+      // Post a task that sleeps for a short duration
+      pool.post (Box::new (|| {
+        thread::sleep (Duration::from_millis (50));
+        Re::Ok(())})) .unwrap();
 
-    // Wait for the job to complete
-    let mut cleared = false;
-    for _ in 0..90 {
-      if pool.jobsⁿ().unwrap() == 0 {
-        cleared = true;
-        break;}
-      thread::sleep (Duration::from_millis (10))}
+      // Right after posting, jobsⁿ should be at least 1 (queued or running)
+      assert_eq! (1, pool.jobsⁿ().unwrap());
 
-    // Assert that the jobs count successfully reached 0
-    assert! (cleared, "jobsⁿ did not reach 0 in time");
-    assert_eq! (pool.jobsⁿ().unwrap(), 0);
-    
-    pool.bye();
-    while pool.stop() > 0 {
-      thread::sleep (Duration::from_millis (10));}}
+      // Wait for the job to complete
+      let mut cleared = false;
+      for _ in 0..90 {
+        if pool.jobsⁿ().unwrap() == 0 {
+          cleared = true;
+          break;}
+        thread::sleep (Duration::from_millis (10))}
 
-  #[test]
-  fn vs_system() {
-    use std::sync::atomic::AtomicU64;
-    use std::time::Instant;
+      // Assert that the jobs count successfully reached 0
+      assert! (cleared, "jobsⁿ did not reach 0 in time");
+      assert_eq! (pool.jobsⁿ().unwrap(), 0);
+      
+      pool.bye();
+      while pool.stop() > 0 {
+        thread::sleep (Duration::from_millis (10));}}
 
-    { let tpool = tpool().unwrap();
-      if tpool.threadsⁿ() == 0 {
-        tpool.sponsor ("vs_system".into()) .unwrap();
-        assert_eq! (tpool.threadsⁿ(), 1)} }
+    #[test]
+    fn aarc_oneshot() {
+      { let tpool = tpool().unwrap();
+        if tpool.threadsⁿ() == 0 {
+          tpool.sponsor ("oneshot".into()) .unwrap();
+          assert_eq! (tpool.threadsⁿ(), 1)} }
 
-    static TPOST_DONE: AtomicU64 = AtomicU64::new (0);
-    fn cps_tpost (count: u32, start: Instant) {
-      if count == 123 {
-        TPOST_DONE.store (start.elapsed().as_micros() as u64, Ordering::Relaxed);
-        return}
-      assert! (tpost (10, 1, Box::new (move || {
-        cps_tpost (count + 1, start);
-        Re::Ok(())})) .unwrap())}
-    cps_tpost (0, Instant::now());
+      let rx = AArc::<&'static str>::empty();
+      let tx = rx.clone();
+      tpost (9, 1, Box::new (move || {
+        thread::sleep (Duration::from_millis (20));
+        tx.spinˢ (1, "done")?;
+        Re::Ok(())})) .unwrap();
+      let val = rx.spinʷ (-1) .unwrap().take();
+      assert_eq! (*val, "done")}
 
-    static THREAD_DONE: AtomicU64 = AtomicU64::new (0);
-    fn cps_thread (count: u32, start: Instant) {
-      if count == 123 {
-        THREAD_DONE.store (start.elapsed().as_micros() as u64, Ordering::Relaxed);
-        return}
-      thread::spawn (move || cps_thread (count + 1, start));}
-    cps_thread (0, Instant::now());
+    #[test]
+    fn vs_system() {
+      use std::time::Instant;
 
-    loop {
-      let tpost_time = TPOST_DONE.load (Ordering::Relaxed);
-      let thread_time = THREAD_DONE.load (Ordering::Relaxed);
-      if tpost_time != 0 && thread_time != 0 {
-        // tpost: 122µs, thread: 5666µs
-        if true {print! ("tpost: {}µs, thread: {}µs ", tpost_time, thread_time)}
-        assert! (tpost_time < thread_time);
-        break}
-      thread::sleep (Duration::from_millis (20))}}}
+      { let tpool = tpool().unwrap();
+        if tpool.threadsⁿ() == 0 {
+          tpool.sponsor ("vs_system".into()) .unwrap();
+          assert_eq! (tpool.threadsⁿ(), 1)} }
+
+      let tpost_done = AArc::<u64>::empty();
+      let tpost_done_c = tpost_done.clone();
+      fn cps_tpost (count: u32, start: Instant, done: AArc<u64>) {
+        if count == 123 {
+          done.spin_set (start.elapsed().as_micros() as u64) .unwrap();
+          return}
+        assert! (tpost (9, 1, Box::new (move || {
+          cps_tpost (count + 1, start, done);
+          Re::Ok(())})) .unwrap())}
+      cps_tpost (0, Instant::now(), tpost_done_c);
+
+      let thread_done = AArc::<u64>::empty();
+      let thread_done_c = thread_done.clone();
+      fn cps_thread (count: u32, start: Instant, done: AArc<u64>) {
+        if count == 123 {
+          done.spin_set (start.elapsed().as_micros() as u64) .unwrap();
+          return}
+        thread::spawn (move || cps_thread (count + 1, start, done));}
+      cps_thread (0, Instant::now(), thread_done_c);
+
+      loop {
+        if let (Ok (tpost_time), Ok (thread_time)) = (tpost_done.spin_rd(), thread_done.spin_rd()) {
+          // tpost: 122µs, thread: 5666µs
+          if true {print! ("tpost: {}µs, thread: {}µs ", *tpost_time, *thread_time)}
+          assert! (*tpost_time < *thread_time);
+          break}
+        thread::sleep (Duration::from_millis (20))}}}}
+
+/*
+# udiff: let's move tpool test into a separate (sub)module protected with cfg from non-nightly build
+
+    --- gemini/gemini-3.1-pro-preview, 31ᵏ 781ˡ 45% Σ 32ᵏ -------
+
+The goal is to move the tests within the `tpool` module into a separate `tests` submodule that is conditionally compiled only for tests and when the `nightly` feature is enabled.
+
+Here is the plan:
+1. Wrap the `#[test]` functions at the end of the `tpool` module inside a `mod tests { ... }`.
+2. Add the `#[cfg(all(test, feature = "nightly"))]` attribute to the new `tests` module.
+3. Include necessary imports (`use super::*;`, `use crate::aarc::AArc;`, `use crate::re::Re;`, `use std::thread;`, `use std::time::Duration;`) at the top of the `tests` module so the test code resolves correctly.
+
+*/
