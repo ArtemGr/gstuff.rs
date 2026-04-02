@@ -1225,11 +1225,15 @@ pub fn length_coded (by: &[u8]) -> re::Re<(u64, usize)> {  // MySQLClientServerP
 */
 
 pub trait AtBool {
+  /// swap with `Ordering::Relaxed`
+  fn cas (&self, current: bool, new: bool) -> Result<bool, bool>;
   /// load with `Ordering::Relaxed`
   fn l (&self) -> bool;
   /// store with `Ordering::Relaxed`
   fn s (&self, val: bool);}
 impl AtBool for core::sync::atomic::AtomicBool {
+  fn cas (&self, current: bool, new: bool) -> Result<bool, bool> {
+    self.compare_exchange (current, new, Ordering::Relaxed, Ordering::Relaxed)}
   fn l (&self) -> bool {
     self.load (Ordering::Relaxed)}
   fn s (&self, val: bool) {
@@ -1500,41 +1504,72 @@ pub mod shuffled_iter {
     // Improbable that a shuffled array of 100 elements has more than a few elements in their original positions
     assert! (same_pos < 9, "{}", same_pos)}}
 
-/// Pool which `join`s `thread`s on `drop`.
 #[cfg(feature = "tpool")] pub mod tpool {
   //! ### `TPool` Methods
-  //! * `fn post (&self, task: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> Re<()>`
-  //!   Runs given callback from one of `sponsor`ed threads.
-  //! * `fn fin (&self, tag: InlinableString, fin: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> bool`
-  //!   Registers given callback, if not already per tag, to be run (FIFO) after pool threads are joined in `stop`.
+  //! * `fn post (&self, task: Box<dyn Task>) -> Re<()>`
+  //!   Runs given task from one of `sponsor`ed threads.
+  //! * `fn post_at (&self, next_ms: u64, task: Box<dyn Task>) -> Re<()>`
+  //!   Schedules task to run at `next_ms` epoch from one of `sponsor`ed threads.
+  //! * `fn fin (&self, tag: InlinableString, fin: Box<dyn TTask>) -> bool`
+  //!   Registers given task, if not already per tag, to be run (FIFO) on `bye`.
+  //!   FnOnce tasks complete immediately; TTask implementations returning Repeat run in `stop`.
   //! * `fn jobsⁿ (&self) -> Re<usize>` Number of jobs queued or running.
   //! * `fn threadsⁿ (&self) -> usize` Number of threads in the pool.
-  //! * `fn bye (&self)` Signals threads to exit and prevents new jobs from being posted.
-  //! * `fn stop (&self) -> usize` Non-blocking stop: joins finished threads and runs finalizers.
+  //! * `fn bye (&self) -> usize` Signals threads to exit, runs finalizers, prevents new jobs from being posted.
+  //! * `fn stop (&self) -> usize` Non-blocking stop: joins finished threads, runs fin timers.
   //!
   //! ### Global Functions
   //! * `fn tpool() -> Result<AReadGuard<'static, TPool, TPool>, AArcErr>` Shared thread pool.
-  //! * `fn tpost (spin: u32, threads: u8, task: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> Re<bool>`
+  //! * `fn tpost (spin: u32, threads: u8, task: Box<dyn Task>) -> Re<bool>`
   //!   Posts `task` to shared `TPOOL` if `threads` are in it, or runs on current thread otherwise.
 
-  use crate::any_to_str;
+  use crate::{any_to_str, now_ms};
   use crate::aarc::{AArc, AArcErr, AReadGuard};
   use crate::re::Re;
   use fomat_macros::fomat;
   use inlinable_string::InlinableString;
-  use std::collections::VecDeque;
+  use parking_lot::{Condvar, Mutex};
+  use std::collections::{BinaryHeap, VecDeque};
   use std::hint::spin_loop;
   use std::panic::{catch_unwind, AssertUnwindSafe};
   use std::sync::atomic::{AtomicBool, AtomicI16, Ordering};
   use std::thread::{self, JoinHandle};
   use std::time::Duration;
-  use parking_lot::{Condvar, Mutex};
+
+  pub enum TaskRe {
+    /// Do not re-schedule
+    Once(()),
+    /// Re-schedule to run `task` at UNIX time `next_ms`
+    Repeat {next_ms: u64, task: Box<dyn TTask>}}
+
+  pub trait TTask: Send + 'static {
+    fn call (self: Box<Self>) -> Re<TaskRe>;}
+
+  impl<F: FnOnce() -> Re<()> + Send + 'static> TTask for F {
+    fn call (self: Box<Self>) -> Re<TaskRe> {
+      (*self)()?;
+      Re::Ok (TaskRe::Once(()))}}
+
+  struct Scheduled {
+    next_ms: u64,
+    task: Box<dyn TTask>}
+
+  impl PartialEq for Scheduled {
+    fn eq (&self, other: &Self) -> bool {self.next_ms == other.next_ms}}
+  impl Eq for Scheduled {}
+  impl PartialOrd for Scheduled {
+    fn partial_cmp (&self, other: &Self) -> Option<std::cmp::Ordering> {Some (self.cmp (other))}}
+  impl Ord for Scheduled {
+    fn cmp (&self, other: &Self) -> std::cmp::Ordering {
+      other.next_ms.cmp (&self.next_ms)}}  // min-heap
 
   #[derive (Default)]
   struct TPoolState {
-    queue: VecDeque<Box<dyn FnOnce() -> Re<()> + Send + 'static>>,
+    queue: VecDeque<Box<dyn TTask>>,
+    scheduled: BinaryHeap<Scheduled>,
     threads: Vec<(InlinableString, JoinHandle<Re<()>>)>,
-    finalizers: Vec<(InlinableString, Box<dyn FnOnce() -> Re<()> + Send + 'static>)>}
+    finalizers: Vec<(InlinableString, Box<dyn TTask>)>,
+    fin_timers: Vec<(InlinableString, u64, Box<dyn TTask>)>}
 
   #[derive (Default)]
   pub struct TPool {
@@ -1564,25 +1599,40 @@ pub mod shuffled_iter {
           loop {
             let task = {
               let mut state = po.state.lock();
+              let ms = now_ms();
               match state.queue.pop_front() {
                 Some (j) => {po.running.fetch_add (1, Ordering::Relaxed); j}
+                // NB: Scheduled tasks whose time has come
+                None if state.scheduled.peek().map_or (false, |s| s.next_ms <= ms) => {
+                  po.running.fetch_add (1, Ordering::Relaxed);
+                  state.scheduled.pop().unwrap().task}
                 // NB: We only check `bye` when out of jobs, in order for jobs to run to completion at shutdown
-                None if po.bye.load (Ordering::Relaxed) => {break Re::Ok(())}
+                None if po.bye.load (Ordering::Relaxed) && state.scheduled.is_empty() => {break Re::Ok(())}
                 None => {
-                  po.alarm.wait_for (&mut state, Duration::from_secs_f32 (0.31));
-                  if let Some (job) = state.queue.pop_front() {po.running.fetch_add (1, Ordering::Relaxed); job} else {continue}}}};
-            let rc = catch_unwind (AssertUnwindSafe (task));
+                  let wait = state.scheduled.peek()
+                    .map_or (314, |s| (s.next_ms.saturating_sub (ms)) .min (314));
+                  po.alarm.wait_for (&mut state, Duration::from_millis (wait));
+                  if let Some (job) = state.queue.pop_front() {po.running.fetch_add (1, Ordering::Relaxed); job}
+                  else {let ms = now_ms();
+                    if state.scheduled.peek().map_or (false, |s| s.next_ms <= ms) {
+                      po.running.fetch_add (1, Ordering::Relaxed); state.scheduled.pop().unwrap().task}
+                    else {continue}}}}};
+            let rc = catch_unwind (AssertUnwindSafe (|| task.call()));
             let running = po.running.fetch_sub (1, Ordering::Relaxed);
             if running < 0 {log! (a 202, [=running])}
             match rc {
-              Ok (Re::Ok(())) => {}
+              Ok (Re::Ok (TaskRe::Once(()))) => {}
+              Ok (Re::Ok (TaskRe::Repeat {next_ms, task})) => {
+                let mut state = po.state.lock();
+                state.scheduled.push (Scheduled {next_ms, task});
+                po.alarm.notify_one();}
               Ok (Re::Err (err)) => {log! (a 1, (err))}
               Err (err) => {log! (a 1, [any_to_str (&*err)])}}}})?));
       Re::Ok (true)}}
 
   impl TPool {
-    /// Run given callback from one of `sponsor`ed threads.
-    pub fn post (&self, task: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> Re<()> {
+    /// Run given task from one of `sponsor`ed threads.
+    pub fn post (&self, task: Box<dyn TTask>) -> Re<()> {
       // Lock before checking `bye` so worker threads can't observe empty queue and exit before we push
       let mut state = self.state.lock();
       if self.bye.load (Ordering::Relaxed) {return Re::Err ("TPool is stopping".into())}
@@ -1590,9 +1640,18 @@ pub mod shuffled_iter {
       self.alarm.notify_one();
       Re::Ok(())}
 
-    /// Run given callback (FIFO) after pool threads are joined in `stop`.  
+    /// Schedule task to run at `next_ms` epoch from one of `sponsor`ed threads.
+    pub fn post_at (&self, next_ms: u64, task: Box<dyn TTask>) -> Re<()> {
+      let mut state = self.state.lock();
+      if self.bye.load (Ordering::Relaxed) {return Re::Err ("TPool is stopping".into())}
+      state.scheduled.push (Scheduled {next_ms, task});
+      self.alarm.notify_one();
+      Re::Ok(())}
+
+    /// Run given task (FIFO) on `bye`. FnOnce completes immediately.  
+    /// A TTask returning Repeat runs in the `stop` loop.  
     /// `false` if non-empty `tag` was already registered.
-    pub fn fin (&self, tag: InlinableString, finalizer: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> bool {
+    pub fn fin (&self, tag: InlinableString, finalizer: Box<dyn TTask>) -> bool {
       let mut state = self.state.lock();
       if !tag.is_empty() && state.finalizers.iter().any (|(tagʹ, _)| *tagʹ == tag) {false}
       else {state.finalizers.push ((tag, finalizer)); true}}
@@ -1600,7 +1659,7 @@ pub mod shuffled_iter {
     /// Number of jobs queued or running.
     pub fn jobsⁿ (&self) -> Re<usize> {
       let state = self.state.lock();
-      Re::Ok (state.queue.len() + self.running.load (Ordering::Relaxed) .max (0) as usize)}
+      Re::Ok (state.queue.len() + state.scheduled.len() + self.running.load (Ordering::Relaxed) .max (0) as usize)}
 
     /// Number of sponsored threads.
     pub fn threadsⁿ (&self) -> usize {
@@ -1609,12 +1668,20 @@ pub mod shuffled_iter {
     /// Signal threads to exit and prevent new jobs from being posted.
     pub fn bye (&self) -> usize {
       self.bye.store (true, Ordering::Relaxed);
+      let finalizers = std::mem::take (&mut self.state.lock().finalizers);
+      for (tag, fin) in finalizers {
+        let rc = catch_unwind (AssertUnwindSafe (|| fin.call()));
+        match rc {
+          Ok (Re::Ok (TaskRe::Once(()))) => {}
+          Ok (Re::Ok (TaskRe::Repeat {next_ms, task})) => {
+            self.state.lock().fin_timers.push ((tag, next_ms, task));}
+          Ok (Re::Err (err)) => {log! (a 1, (tag) "] " (err))}
+          Err (err) => {log! (a 1, (tag) "] " [any_to_str (&*err)])}}}
       self.alarm.notify_all()}
 
-    /// Non-blocking stop: joins finished threads and runs finalizers if all threads are done.<br>
-    /// Returns the number of threads still running, should reach 0 when pool is stopped.
+    /// Non-blocking stop: joins finished threads, runs fin timers.<br>
+    /// Returns the number of threads and fin timers still running, should reach 0 when pool is stopped.
     pub fn stop (&self) -> usize {
-      let mut finalizers = Vec::new();
       let len = {
         let mut state = self.state.lock();
         let mut i = 0;
@@ -1626,16 +1693,25 @@ pub mod shuffled_iter {
               Ok (Re::Err (err)) => {log! (a 1, (err))}
               Err (err) => {log! (a 1, [any_to_str (&*err)])}}
           } else {i += 1}}
-        if state.threads.is_empty() {
-          finalizers = std::mem::take (&mut state.finalizers)}
         state.threads.len()};
-      for (tag, finalizer) in finalizers {  // FIFO
-        let rc = catch_unwind (AssertUnwindSafe (finalizer));
-        match rc {
-          Ok (Re::Ok(())) => {}
-          Ok (Re::Err (err)) => {log! (a 1, (tag) "] " (err))}
-          Err (err) => {log! (a 1, (tag) "] " [any_to_str (&*err)])}}}
-      len}}
+      let ms = now_ms();
+      let fin_timers = std::mem::take (&mut self.state.lock().fin_timers);
+      let mut remaining = Vec::new();
+      for (tag, next_ms, task) in fin_timers {
+        if next_ms <= ms {
+          let rc = catch_unwind (AssertUnwindSafe (|| task.call()));
+          match rc {
+            Ok (Re::Ok (TaskRe::Once(()))) => {}
+            Ok (Re::Ok (TaskRe::Repeat {next_ms, task})) => {
+              remaining.push ((tag, next_ms, task));}
+            Ok (Re::Err (err)) => {log! (a 1, (tag) "] " (err))}
+            Err (err) => {log! (a 1, (tag) "] " [any_to_str (&*err)])}}
+        } else {remaining.push ((tag, next_ms, task))}}
+      let rlen = remaining.len();
+      if rlen > 0 {
+        self.state.lock().fin_timers = remaining;}
+      len + rlen}
+}
 
   pub static _TPOOL: AArc<TPool> = AArc::none();
 
@@ -1651,10 +1727,12 @@ pub mod shuffled_iter {
   /// 
   /// * `spin` - Try to obtain `TPOOL` this many times before falling back to direct invocation of `task`.
   /// * `threads` - Use direct invocation if there is less than the given number of threads in the pool.
-  pub fn tpost (spin: i32, threads: u8, task: Box<dyn FnOnce() -> Re<()> + Send + Sync + 'static>) -> Re<bool> {
+  pub fn tpost (spin: i32, threads: u8, task: Box<dyn TTask>) -> Re<bool> {
     let pool = _TPOOL.spidʳ (spin)?;
     if pool.threadsⁿ() < threads as usize {
-      task()?;
+      match task.call()? {
+        TaskRe::Once(()) => {}
+        TaskRe::Repeat {next_ms, task} => {pool.post_at (next_ms, task)?;}}
       Re::Ok (false)
     } else {
       pool.post (task)?;
@@ -1754,18 +1832,31 @@ pub mod shuffled_iter {
           if true {print! ("tpost: {}µs, thread: {}µs ", *tpost_time, *thread_time)}
           assert! (*tpost_time < *thread_time);
           break}
-        thread::sleep (Duration::from_millis (20))}}}}
+        thread::sleep (Duration::from_millis (20))}}
 
-/*
-# udiff: let's move tpool test into a separate (sub)module protected with cfg from non-nightly build
+    #[test]
+    fn custom_timer_task() {
+      struct Timer {count: u32, max: u32, interval_ms: u64, done: AArc<u32>}
+      impl TTask for Timer {
+        fn call (mut self: Box<Self>) -> Re<TaskRe> {
+          self.count += 1;
+          if self.count < self.max {
+            Re::Ok (TaskRe::Repeat {next_ms: now_ms() + self.interval_ms, task: self})
+          } else {
+            self.done.spin_set (self.count)?;
+            Re::Ok (TaskRe::Once(()))}}}
 
-    --- gemini/gemini-3.1-pro-preview, 31ᵏ 781ˡ 45% Σ 32ᵏ -------
+      let pool_arc = AArc::<TPool>::new (TPool::default());
+      let pool = pool_arc.spin_rd().unwrap();
+      pool.sponsor ("timer_test".into()) .unwrap();
 
-The goal is to move the tests within the `tpool` module into a separate `tests` submodule that is conditionally compiled only for tests and when the `nightly` feature is enabled.
+      let done = AArc::<u32>::empty();
+      let timer = Timer {count: 0, max: 5, interval_ms: 20, done: done.clone()};
+      pool.post (Box::new (timer)) .unwrap();
 
-Here is the plan:
-1. Wrap the `#[test]` functions at the end of the `tpool` module inside a `mod tests { ... }`.
-2. Add the `#[cfg(all(test, feature = "nightly"))]` attribute to the new `tests` module.
-3. Include necessary imports (`use super::*;`, `use crate::aarc::AArc;`, `use crate::re::Re;`, `use std::thread;`, `use std::time::Duration;`) at the top of the `tests` module so the test code resolves correctly.
+      let val = done.spinʷ (-31) .unwrap();
+      assert_eq! (*val, 5); print! ("{} ", (*val));
 
-*/
+      pool.bye();
+      while pool.stop() > 0 {
+        thread::sleep (Duration::from_millis (10));}}}}

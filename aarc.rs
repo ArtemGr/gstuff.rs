@@ -23,9 +23,9 @@
 //!   Acquires write lock and sets new value of type `T`, returning typed guard.
 //! * `fn spic_rd / spicʳ<T> (&self, cond: FnMut(&T) -> Re<bool>) -> Result<AReadGuard<'_, T>, AArcErr>`
 //!   Conditional read: acquires lock, checks `cond(&T)`; re-spins on `false`. Typed `AArc<T>` only.
-//! * `fn spic_wr / spicʷ<T> (&self, cond: FnMut(&T) -> Re<bool>) -> Result<AWriteGuard<'_, T>, AArcErr>`
-//!   Conditional write: acquires lock, checks `cond(&T)`; re-spins on `false`. Typed `AArc<T>` only.
-//! * `fn status -> (u32, &'static str)` Returns `(read_locks, status_string)`.
+//! * `fn spic_wr / spicʷ<T> (&self, cond: FnMut(&mut T) -> Re<bool>) -> Result<AWriteGuard<'_, T>, AArcErr>`
+//!   Conditional write: acquires lock, checks `cond(&mut T)`; re-spins on `false`. Typed `AArc<T>` only.
+//! * `fn status -> (u32, &'static str, u32)` Returns `(read_locks, status_string, refs)`.
 //!
 //! ### Guard Methods
 //! * `AReadGuard::aarc -> AArc<C>` Recovers new `AArc` reference from read guard.
@@ -149,8 +149,9 @@ impl<C: ?Sized> Default for AArc<C> {
 
 impl<T: std::fmt::Debug + Send + Sync + 'static> std::fmt::Debug for AArc<T> {
   fn fmt (&self, fm: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let (readers, status) = self.status();
+    let (readers, status, refs) = self.status();
     let mut dbg = fm.debug_struct ("AArc");
+    dbg.field ("refs", &refs);
     dbg.field ("readers", &readers);
     if !status.is_empty() {dbg.field ("status", &status);}
     if status == "null" || status == "empty" {return dbg.finish()}
@@ -215,7 +216,7 @@ impl<C: ?Sized> AArc<C> {
       let state = cb.state.load (Ordering::Acquire);
       if state & WRITE_BIT == 0 && state & READ_MASK == 0 {
         if cb.state.compare_exchange_weak (state, state | WRITE_BIT, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
-          let mut guard = InitGuard {cb: ptr, success: false, _marker: PhantomData};
+          let mut guard = InitGuard {cb: ptr, success: false, _ph: PhantomData};
           let old = unsafe {(*cb.data.get()).take()};
           guard.success = true;
           let mut current = cb.state.load (Ordering::Relaxed);
@@ -228,20 +229,21 @@ impl<C: ?Sized> AArc<C> {
       if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
     Err (AArcErr::SpinOut)}
 
-  /// Returns `(read_locks, status_string)`.
+  /// Returns `(read_locks, status_string, refs)`.
   /// Status is one of: "null", "write-locked", "empty", or "" (initialized, not write-locked).
-  pub fn status (&self) -> (u32, &'static str) {
+  pub fn status (&self) -> (u32, &'static str, u32) {
     let ptr = self.ptr.load (Ordering::Acquire);
-    if ptr.is_null() {return (0, "null")}
+    if ptr.is_null() {return (0, "null", 0)}
     let cb = unsafe {&*ptr};
     let state = cb.state.load (Ordering::Relaxed);
     let readers = (state & READ_MASK) / READ_INC;
+    let refs = state & REF_MASK;
     let status = if (state & WRITE_BIT) != 0 {
       "write-locked"
     } else if (state & EMPTY_BIT) != 0 {
       "empty"
     } else {""};
-    (readers, status)}}
+    (readers, status, refs)}}
 
 impl AArc<dyn Any + Send + Sync> {
   pub fn any<T: Send + Sync + 'static> (val: T) -> Self {
@@ -271,7 +273,7 @@ impl AArc<dyn Any + Send + Sync> {
               let data_ref = unsafe {&*cb.data.get()};
               if let Some (any_box) = data_ref {
                 if let Some (typed_ref) = any_box.downcast_ref::<T>() {
-                  return Ok (AReadGuard {cb, ptr: typed_ref as *const T, _phantom: PhantomData})}}
+                  return Ok (AReadGuard {cb, ptr: typed_ref as *const T, _ph: PhantomData})}}
               cb.state.fetch_sub (READ_INC, Ordering::Release);}
             else {continue}}}}
       if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
@@ -280,7 +282,7 @@ impl AArc<dyn Any + Send + Sync> {
   fn do_init<T: Send + Sync + 'static> (&self,
   cb_ptr: *mut ControlBlock<dyn Any + Send + Sync>, init: &mut dyn FnMut() -> Re<T>)
   -> Result<AReadGuard<'_, T>, AArcErr> {
-    let mut guard = InitGuard {cb: cb_ptr, success: false, _marker: PhantomData};
+    let mut guard = InitGuard {cb: cb_ptr, success: false, _ph: PhantomData};
     match init() {
       Re::Ok (val) => {
         let cb = unsafe {&*cb_ptr};
@@ -292,7 +294,7 @@ impl AArc<dyn Any + Send + Sync> {
           let new = (current & !WRITE_BIT & !EMPTY_BIT) + READ_INC;
           match cb.state.compare_exchange_weak (current, new, Ordering::Release, Ordering::Relaxed) {
             Ok (_) => break, Err (x) => current = x}}
-        Ok (AReadGuard {cb, ptr, _phantom: PhantomData})}
+        Ok (AReadGuard {cb, ptr, _ph: PhantomData})}
       Re::Err (e) => Err (AArcErr::Init (e))}}
 
   pub fn spidʳ<T: Default + Send + Sync + 'static> (&self, spins: i32) -> Result<AReadGuard<'_, T>, AArcErr> {
@@ -310,13 +312,13 @@ impl AArc<dyn Any + Send + Sync> {
       let ptr = self.ptr.load (Ordering::Acquire);
       if ptr.is_null() {
         if let Some (cb_ptr) = self.try_alloc_cb() {
-          let mut guard = InitGuard {cb: cb_ptr, success: false, _marker: PhantomData};
+          let mut guard = InitGuard {cb: cb_ptr, success: false, _ph: PhantomData};
           let cb = unsafe {&*cb_ptr};
           let data_ptr = cb.replace_data_box
             (Box::new (T::default()) as Box<dyn Any + Send + Sync>) as *mut _ as *mut T;
           cb.state.fetch_and (!EMPTY_BIT, Ordering::Release);
           guard.success = true;
-          return Ok (AWriteGuard {cb, ptr: data_ptr, _phantom: PhantomData})
+          return Ok (AWriteGuard {cb, ptr: data_ptr, _ph: PhantomData})
         } else {continue}
       } else {
         let cb = unsafe {&*ptr};
@@ -325,19 +327,19 @@ impl AArc<dyn Any + Send + Sync> {
           if state & EMPTY_BIT != 0 {
             if cb.state.compare_exchange_weak
             (state, state | WRITE_BIT, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
-              let mut guard = InitGuard {cb: ptr, success: false, _marker: PhantomData};
+              let mut guard = InitGuard {cb: ptr, success: false, _ph: PhantomData};
               let data_ptr = cb.replace_data_box
                 (Box::new (T::default()) as Box<dyn Any + Send + Sync>) as *mut _ as *mut T;
               cb.state.fetch_and (!EMPTY_BIT, Ordering::Release);
               guard.success = true;
-              return Ok (AWriteGuard {cb: ptr, ptr: data_ptr, _phantom: PhantomData})}
+              return Ok (AWriteGuard {cb: ptr, ptr: data_ptr, _ph: PhantomData})}
           } else {
             if cb.state.compare_exchange_weak
             (state, state | WRITE_BIT, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
               let data_mut = unsafe {&mut *cb.data.get()};
               if let Some (any_box) = data_mut {
                 if let Some (typed_mut) = any_box.downcast_mut::<T>() {
-                  return Ok (AWriteGuard {cb: ptr, ptr: typed_mut as *mut T, _phantom: PhantomData})}}
+                  return Ok (AWriteGuard {cb: ptr, ptr: typed_mut as *mut T, _ph: PhantomData})}}
               cb.state.fetch_and (!WRITE_BIT, Ordering::Release);}
             else {continue}}}}
       if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
@@ -357,7 +359,7 @@ impl AArc<dyn Any + Send + Sync> {
             let data_ref = unsafe {&*cb.data.get()};
             if let Some (any_box) = data_ref {
               if let Some (typed_ref) = any_box.downcast_ref::<T>() {
-                return Ok (AReadGuard {cb, ptr: typed_ref as *const T, _phantom: PhantomData})}}
+                return Ok (AReadGuard {cb, ptr: typed_ref as *const T, _ph: PhantomData})}}
             cb.state.fetch_sub (READ_INC, Ordering::Release);}
           else {continue}}}
       if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
@@ -379,7 +381,7 @@ impl AArc<dyn Any + Send + Sync> {
             let data_mut = unsafe {&mut *cb.data.get()};
             if let Some (any_box) = data_mut {
               if let Some (typed_mut) = any_box.downcast_mut::<T>() {
-                return Ok (AWriteGuard {cb, ptr: typed_mut as *mut T, _phantom: PhantomData})}}
+                return Ok (AWriteGuard {cb, ptr: typed_mut as *mut T, _ph: PhantomData})}}
             cb.state.fetch_and (!WRITE_BIT, Ordering::Release);}
           else {continue}}}
       if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
@@ -394,25 +396,25 @@ impl AArc<dyn Any + Send + Sync> {
       if ptr.is_null() {
         if let Some (cb_ptr) = self.try_alloc_cb() {
           // InitGuard ensures cleanup if any operation panics before we return the AWriteGuard
-          let mut guard = InitGuard {cb: cb_ptr, success: false, _marker: PhantomData};
+          let mut guard = InitGuard {cb: cb_ptr, success: false, _ph: PhantomData};
           let cb = unsafe {&*cb_ptr};
           let data_ptr = cb.replace_data_box (Box::new (val) as Box<dyn Any + Send + Sync>) as *mut _ as *mut T;
           cb.state.fetch_and (!EMPTY_BIT, Ordering::Release);
           guard.success = true;
-          return Ok (AWriteGuard {cb, ptr: data_ptr, _phantom: PhantomData})
+          return Ok (AWriteGuard {cb, ptr: data_ptr, _ph: PhantomData})
         } else {continue}
       } else {
         let cb = unsafe {&*ptr};
-        let state = cb.state.load (Ordering::Acquire);
-        if state & WRITE_BIT == 0 && state & READ_MASK == 0 {
-          if cb.state.compare_exchange_weak (state, state | WRITE_BIT, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
+        let st = cb.state.load (Ordering::Acquire);
+        if st & WRITE_BIT == 0 && st & READ_MASK == 0 {
+          if cb.state.compare_exchange_weak (st, st | WRITE_BIT, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
             // Use InitGuard to ensure WRITE_BIT is cleared if `drop(old)` panics.
             // Without this, a panic during drop would leave the lock permanently stuck.
-            let mut guard = InitGuard {cb: ptr, success: false, _marker: PhantomData};
+            let mut guard = InitGuard {cb: ptr, success: false, _ph: PhantomData};
             let data_ptr = cb.replace_data_box (Box::new (val) as Box<dyn Any + Send + Sync>) as *mut _ as *mut T;
             cb.state.fetch_and (!EMPTY_BIT, Ordering::Release);
             guard.success = true;
-            return Ok (AWriteGuard {cb, ptr: data_ptr, _phantom: PhantomData})}
+            return Ok (AWriteGuard {cb, ptr: data_ptr, _ph: PhantomData})}
           continue}}
       if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
     Err (AArcErr::SpinOut)}
@@ -437,17 +439,17 @@ impl<T: Send + Sync + 'static> AArc<T> {
         } else {continue}
       } else {
         let cb = unsafe {&*ptr};
-        let state = cb.state.load (Ordering::Acquire);
-        if state & WRITE_BIT == 0 {
-          if state & EMPTY_BIT != 0 {
-            if cb.state.compare_exchange (state, state | WRITE_BIT, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
+        let st = cb.state.load (Ordering::Acquire);
+        if st & WRITE_BIT == 0 {
+          if st & EMPTY_BIT != 0 {
+            if cb.state.compare_exchange (st, st | WRITE_BIT, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
               return self.do_init (ptr, init)}}
           else {
-            if (state & READ_MASK) == READ_MASK {return Err (AArcErr::ReaderOverflow)}
-            if cb.state.compare_exchange_weak (state, state + READ_INC, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
+            if (st & READ_MASK) == READ_MASK {return Err (AArcErr::ReaderOverflow)}
+            if cb.state.compare_exchange_weak (st, st + READ_INC, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
               let data_ref = unsafe {&*cb.data.get()};
               if let Some (typed_box) = data_ref {
-                return Ok (AReadGuard {cb, ptr: &**typed_box as *const T, _phantom: PhantomData})}
+                return Ok (AReadGuard {cb, ptr: &**typed_box as *const T, _ph: PhantomData})}
               cb.state.fetch_sub (READ_INC, Ordering::Release);}
             else {continue}}}}
       if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
@@ -455,7 +457,7 @@ impl<T: Send + Sync + 'static> AArc<T> {
 
   fn do_init (&self, cb_ptr: *mut ControlBlock<T>, init: &mut dyn FnMut() -> Re<T>)
   -> Result<AReadGuard<'_, T, T>, AArcErr> {
-    let mut guard = InitGuard {cb: cb_ptr, success: false, _marker: PhantomData};
+    let mut guard = InitGuard {cb: cb_ptr, success: false, _ph: PhantomData};
     match init() {
       Re::Ok (val) => {
         let cb = unsafe {&*cb_ptr};
@@ -467,7 +469,7 @@ impl<T: Send + Sync + 'static> AArc<T> {
           let new = (current & !WRITE_BIT & !EMPTY_BIT) + READ_INC;
           match cb.state.compare_exchange_weak (current, new, Ordering::Release, Ordering::Relaxed) {
             Ok (_) => break, Err (x) => current = x}}
-        Ok (AReadGuard {cb, ptr, _phantom: PhantomData})}
+        Ok (AReadGuard {cb, ptr, _ph: PhantomData})}
       Re::Err (e) => Err (AArcErr::Init (e))}}
 
   pub fn spidʳ (&self, spins: i32) -> Result<AReadGuard<'_, T, T>, AArcErr> where T: Default {
@@ -484,12 +486,12 @@ impl<T: Send + Sync + 'static> AArc<T> {
       let ptr = self.ptr.load (Ordering::Acquire);
       if ptr.is_null() {
         if let Some (cb_ptr) = self.try_alloc_cb() {
-          let mut guard = InitGuard {cb: cb_ptr, success: false, _marker: PhantomData};
+          let mut guard = InitGuard {cb: cb_ptr, success: false, _ph: PhantomData};
           let cb = unsafe {&*cb_ptr};
           let data_ptr = cb.replace_data_box (Box::new (T::default()));
           cb.state.fetch_and (!EMPTY_BIT, Ordering::Release);
           guard.success = true;
-          return Ok (AWriteGuard {cb, ptr: data_ptr, _phantom: PhantomData})
+          return Ok (AWriteGuard {cb, ptr: data_ptr, _ph: PhantomData})
         } else {continue}
       } else {
         let cb = unsafe {&*ptr};
@@ -498,17 +500,17 @@ impl<T: Send + Sync + 'static> AArc<T> {
           if state & EMPTY_BIT != 0 {
             if cb.state.compare_exchange_weak
             (state, state | WRITE_BIT, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
-              let mut guard = InitGuard {cb: ptr, success: false, _marker: PhantomData};
+              let mut guard = InitGuard {cb: ptr, success: false, _ph: PhantomData};
               let data_ptr = cb.replace_data_box (Box::new (T::default()));
               cb.state.fetch_and (!EMPTY_BIT, Ordering::Release);
               guard.success = true;
-              return Ok (AWriteGuard {cb: ptr, ptr: data_ptr, _phantom: PhantomData})}
+              return Ok (AWriteGuard {cb: ptr, ptr: data_ptr, _ph: PhantomData})}
           } else {
             if cb.state.compare_exchange_weak
             (state, state | WRITE_BIT, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
               let data_mut = unsafe {&mut *cb.data.get()};
               if let Some (typed_box) = data_mut {
-                return Ok (AWriteGuard {cb: ptr, ptr: &mut **typed_box as *mut T, _phantom: PhantomData})}
+                return Ok (AWriteGuard {cb: ptr, ptr: &mut **typed_box as *mut T, _ph: PhantomData})}
               cb.state.fetch_and (!WRITE_BIT, Ordering::Release);}
             else {continue}}}}
       if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
@@ -525,7 +527,7 @@ impl<T: Send + Sync + 'static> AArc<T> {
           if cb.state.compare_exchange_weak (state, state + READ_INC, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
             let data_ref = unsafe {&*cb.data.get()};
             if let Some (typed_box) = data_ref {
-              return Ok (AReadGuard {cb, ptr: &**typed_box as *const T, _phantom: PhantomData})}
+              return Ok (AReadGuard {cb, ptr: &**typed_box as *const T, _ph: PhantomData})}
             cb.state.fetch_sub (READ_INC, Ordering::Release);}
           else {continue}}}
       if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
@@ -534,20 +536,21 @@ impl<T: Send + Sync + 'static> AArc<T> {
   pub fn spin_rd (&self) -> Result<AReadGuard<'_, T, T>, AArcErr> {
     self.spinʳ (unsafe {SPIN_OUT as i32})}
 
+  /// Conditional read lock
   pub fn spicʳ (&self, spins: i32, cond: &mut dyn FnMut(&T) -> Re<bool>) -> Result<AReadGuard<'_, T, T>, AArcErr> {
     let mut spinc = SpinIt::new (spins);
     while let Some (yieldˀ) = spinc.next() {
       let ptr = self.ptr.load (Ordering::Acquire);
       if !ptr.is_null() {
         let cb = unsafe {&*ptr};
-        let state = cb.state.load (Ordering::Acquire);
-        if state & WRITE_BIT == 0 && state & EMPTY_BIT == 0 {
-          if (state & READ_MASK) == READ_MASK {return Err (AArcErr::ReaderOverflow)}
-          if cb.state.compare_exchange_weak (state, state + READ_INC, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
+        let st = cb.state.load (Ordering::Acquire);
+        if st & WRITE_BIT == 0 && st & EMPTY_BIT == 0 {
+          if (st & READ_MASK) == READ_MASK {return Err (AArcErr::ReaderOverflow)}
+          if cb.state.compare_exchange_weak (st, st + READ_INC, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
             let data_ref = unsafe {&*cb.data.get()};
             if let Some (typed_box) = data_ref {
               match cond (&**typed_box) {
-                Re::Ok (true) => return Ok (AReadGuard {cb, ptr: &**typed_box as *const T, _phantom: PhantomData}),
+                Re::Ok (true) => return Ok (AReadGuard {cb, ptr: &**typed_box as *const T, _ph: PhantomData}),
                 Re::Ok (false) => {
                   cb.state.fetch_sub (READ_INC, Ordering::Release);
                   if spins < 0 {spinc.burst = 0;}},
@@ -573,7 +576,7 @@ impl<T: Send + Sync + 'static> AArc<T> {
           if cb.state.compare_exchange_weak (state, state | WRITE_BIT, Ordering::Acquire, Ordering::Relaxed).is_ok() {
             let data_mut = unsafe {&mut *cb.data.get()};
             if let Some (typed_box) = data_mut {
-              return Ok (AWriteGuard {cb, ptr: &mut **typed_box as *mut T, _phantom: PhantomData})}
+              return Ok (AWriteGuard {cb, ptr: &mut **typed_box as *mut T, _ph: PhantomData})}
             cb.state.fetch_and (!WRITE_BIT, Ordering::Release);}
           else {continue}}}
       if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
@@ -582,19 +585,21 @@ impl<T: Send + Sync + 'static> AArc<T> {
   pub fn spin_wr (&self) -> Result<AWriteGuard<'_, T, T>, AArcErr> {
     self.spinʷ (unsafe {SPIN_OUT as i32})}
 
-  pub fn spicʷ (&self, spins: i32, cond: &mut dyn FnMut(&T) -> Re<bool>) -> Result<AWriteGuard<'_, T, T>, AArcErr> {
+  /// Conditional write lock
+  pub fn spicʷ (&self, spins: i32, cond: &mut dyn FnMut(&mut T) -> Re<bool>)
+  -> Result<AWriteGuard<'_, T, T>, AArcErr> {
     let mut spinc = SpinIt::new (spins);
     while let Some (yieldˀ) = spinc.next() {
       let ptr = self.ptr.load (Ordering::Acquire);
       if !ptr.is_null() {
         let cb = unsafe {&*ptr};
-        let state = cb.state.load (Ordering::Acquire);
-        if state & WRITE_BIT == 0 && state & READ_MASK == 0 && state & EMPTY_BIT == 0 {
-          if cb.state.compare_exchange_weak (state, state | WRITE_BIT, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+        let st = cb.state.load (Ordering::Acquire);
+        if st & WRITE_BIT == 0 && st & READ_MASK == 0 && st & EMPTY_BIT == 0 {
+          if cb.state.compare_exchange_weak (st, st | WRITE_BIT, Ordering::Acquire, Ordering::Relaxed).is_ok() {
             let data_mut = unsafe {&mut *cb.data.get()};
             if let Some (typed_box) = data_mut {
-              match cond (&**typed_box) {
-                Re::Ok (true) => return Ok (AWriteGuard {cb, ptr: &mut **typed_box as *mut T, _phantom: PhantomData}),
+              match cond (&mut **typed_box) {
+                Re::Ok (true) => return Ok (AWriteGuard {cb, ptr: &mut **typed_box as *mut T, _ph: PhantomData}),
                 Re::Ok (false) => {
                   cb.state.fetch_and (!WRITE_BIT, Ordering::Release);
                   if spins < 0 {spinc.burst = 0;}},
@@ -607,7 +612,7 @@ impl<T: Send + Sync + 'static> AArc<T> {
       if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
     Err (AArcErr::SpinOut)}
 
-  pub fn spic_wr (&self, cond: &mut dyn FnMut(&T) -> Re<bool>) -> Result<AWriteGuard<'_, T, T>, AArcErr> {
+  pub fn spic_wr (&self, cond: &mut dyn FnMut(&mut T) -> Re<bool>) -> Result<AWriteGuard<'_, T, T>, AArcErr> {
     self.spicʷ (unsafe {SPIN_OUT as i32}, cond)}
 
   pub fn spinˢ (&self, spins: i32, val: T) -> Result<AWriteGuard<'_, T, T>, AArcErr> {
@@ -615,23 +620,23 @@ impl<T: Send + Sync + 'static> AArc<T> {
       let ptr = self.ptr.load (Ordering::Acquire);
       if ptr.is_null() {
         if let Some (cb_ptr) = self.try_alloc_cb() {
-          let mut guard = InitGuard {cb: cb_ptr, success: false, _marker: PhantomData};
+          let mut guard = InitGuard {cb: cb_ptr, success: false, _ph: PhantomData};
           let cb = unsafe {&*cb_ptr};
           let data_ptr = cb.replace_data_box (Box::new (val));
           cb.state.fetch_and (!EMPTY_BIT, Ordering::Release);
           guard.success = true;
-          return Ok (AWriteGuard {cb, ptr: data_ptr, _phantom: PhantomData})
+          return Ok (AWriteGuard {cb, ptr: data_ptr, _ph: PhantomData})
         } else {continue}
       } else {
         let cb = unsafe {&*ptr};
-        let state = cb.state.load (Ordering::Acquire);
-        if state & WRITE_BIT == 0 && state & READ_MASK == 0 {
-          if cb.state.compare_exchange_weak (state, state | WRITE_BIT, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
-            let mut guard = InitGuard {cb: ptr, success: false, _marker: PhantomData};
+        let st = cb.state.load (Ordering::Acquire);
+        if st & WRITE_BIT == 0 && st & READ_MASK == 0 {
+          if cb.state.compare_exchange_weak (st, st | WRITE_BIT, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
+            let mut guard = InitGuard {cb: ptr, success: false, _ph: PhantomData};
             let data_ptr = cb.replace_data_box (Box::new (val));
             cb.state.fetch_and (!EMPTY_BIT, Ordering::Release);
             guard.success = true;
-            return Ok (AWriteGuard {cb, ptr: data_ptr, _phantom: PhantomData})}
+            return Ok (AWriteGuard {cb, ptr: data_ptr, _ph: PhantomData})}
           continue}}
       if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
     Err (AArcErr::SpinOut)}
@@ -642,7 +647,7 @@ impl<T: Send + Sync + 'static> AArc<T> {
 struct InitGuard<'a, C: ?Sized> {
   cb: *mut ControlBlock<C>,
   success: bool,
-  _marker: PhantomData<&'a ()>}
+  _ph: PhantomData<&'a ()>}
 
 impl<'a, C: ?Sized> Drop for InitGuard<'a, C> {
   fn drop (&mut self) {
@@ -660,7 +665,7 @@ impl<'a, C: ?Sized> Drop for InitGuard<'a, C> {
 pub struct AReadGuard<'a, T: ?Sized, C: ?Sized = dyn Any + Send + Sync> {
   cb: *const ControlBlock<C>,
   ptr: *const T,
-  _phantom: PhantomData<&'a T>}
+  _ph: PhantomData<&'a T>}
 
 impl<'a, T: ?Sized + std::fmt::Debug, C: ?Sized> std::fmt::Debug for AReadGuard<'a, T, C> {
   fn fmt (&self, fm: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -683,7 +688,7 @@ impl<'a, T: ?Sized, C: ?Sized> AReadGuard<'a, T, C> {
     let ptr = f (unsafe {&*self.ptr}) as *const U;
     let cb = self.cb;
     forget (self);
-    AReadGuard {cb, ptr, _phantom: PhantomData}}
+    AReadGuard {cb, ptr, _ph: PhantomData}}
 
   pub fn try_map<U: ?Sized, E, F: FnOnce (&T) -> Result<&U, E>> (self, f: F)
   -> Result<AReadGuard<'a, U, C>, (Self, E)> {
@@ -692,7 +697,7 @@ impl<'a, T: ?Sized, C: ?Sized> AReadGuard<'a, T, C> {
         let ptr = r as *const U;
         let cb = self.cb;
         forget (self);
-        Ok (AReadGuard {cb, ptr, _phantom: PhantomData})}
+        Ok (AReadGuard {cb, ptr, _ph: PhantomData})}
       Err (e) => Err ((self, e))}}
 
   /// Attempts to upgrade the read lock to a write lock without downcasting.
@@ -709,7 +714,7 @@ impl<'a, T: ?Sized, C: ?Sized> AReadGuard<'a, T, C> {
           let ptr = self.ptr as *mut T;
           let cb_ptr = self.cb;
           forget (self);
-          return Ok (AWriteGuard {cb: cb_ptr, ptr, _phantom: PhantomData})}}
+          return Ok (AWriteGuard {cb: cb_ptr, ptr, _ph: PhantomData})}}
       if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
     Err ((self, AArcErr::SpinOut))}
 
@@ -725,7 +730,7 @@ impl<'a, T: ?Sized, C: ?Sized> Drop for AReadGuard<'a, T, C> {
 pub struct AWriteGuard<'a, T: ?Sized, C: ?Sized = dyn Any + Send + Sync> {
   cb: *const ControlBlock<C>,
   ptr: *mut T,
-  _phantom: PhantomData<&'a mut T>}
+  _ph: PhantomData<&'a mut T>}
 
 impl<'a, T: ?Sized + std::fmt::Debug, C: ?Sized> std::fmt::Debug for AWriteGuard<'a, T, C> {
   fn fmt (&self, fm: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -755,13 +760,13 @@ impl<'a, T: ?Sized, C: ?Sized> AWriteGuard<'a, T, C> {
     let ptr = self.ptr as *const T;
     let cb_ptr = self.cb;
     forget (self);
-    AReadGuard {cb: cb_ptr, ptr, _phantom: PhantomData}}
+    AReadGuard {cb: cb_ptr, ptr, _ph: PhantomData}}
 
   pub fn map<U: ?Sized, F: FnOnce (&mut T) -> &mut U> (self, f: F) -> AWriteGuard<'a, U, C> {
     let ptr = f (unsafe {&mut *self.ptr}) as *mut U;
     let cb = self.cb;
     forget (self);
-    AWriteGuard {cb, ptr, _phantom: PhantomData}}
+    AWriteGuard {cb, ptr, _ph: PhantomData}}
 
   pub fn try_map<U: ?Sized, E, F: FnOnce (&mut T) -> Result<&mut U, E>> (self, f: F)
   -> Result<AWriteGuard<'a, U, C>, (Self, E)> {
@@ -770,7 +775,7 @@ impl<'a, T: ?Sized, C: ?Sized> AWriteGuard<'a, T, C> {
         let ptr = r as *mut U;
         let cb = self.cb;
         forget (self);
-        Ok (AWriteGuard {cb, ptr, _phantom: PhantomData})}
+        Ok (AWriteGuard {cb, ptr, _ph: PhantomData})}
       Err (e) => Err ((self, e))}}
 
   pub fn take (self) -> Box<C> {
@@ -793,7 +798,7 @@ impl<'a, T: ?Sized> AWriteGuard<'a, T> {
     // sets EMPTY_BIT. No InitGuard needed — AWriteGuard itself is the guard.
     let ptr = cb.replace_data_box (Box::new (val) as Box<dyn Any + Send + Sync>) as *mut _ as *mut U;
     cb.state.fetch_and (!EMPTY_BIT, Ordering::Release);
-    let guard = AWriteGuard {cb: self.cb, ptr, _phantom: PhantomData};
+    let guard = AWriteGuard {cb: self.cb, ptr, _ph: PhantomData};
     forget (self);
     guard}}
 
@@ -802,7 +807,7 @@ impl<'a, T: Send + Sync + 'static> AWriteGuard<'a, T, T> {
     let cb = unsafe {&*self.cb};
     let ptr = cb.replace_data_box (Box::new (val));
     cb.state.fetch_and (!EMPTY_BIT, Ordering::Release);
-    let guard = AWriteGuard {cb: self.cb, ptr, _phantom: PhantomData};
+    let guard = AWriteGuard {cb: self.cb, ptr, _ph: PhantomData};
     forget (self);
     guard}}
 
@@ -837,16 +842,16 @@ mod tests {
   #[test] fn spid_w() {
     let aarc: AArc = AArc::none();
     assert! (aarc.is_none());
-    assert_eq! (aarc.status(), (0, "null"));  // Empty/uninitialized has no locks.
+    assert_eq! (aarc.status(), (0, "null", 0));  // Empty/uninitialized has no locks.
     // spidʷ initializes with T::default() if empty, returns AWriteGuard
     let mut guard = aarc.spidʷ::<i32> (100) .unwrap();
     assert! (aarc.is_some());
-    assert_eq! (aarc.status(), (0, "write-locked"));  // AWriteGuard holds the exclusive write lock.
+    assert_eq! (aarc.status(), (0, "write-locked", 1));  // AWriteGuard holds the exclusive write lock.
     assert_eq! (*guard, 0);
     *guard = 42;
     
     let read_guard = guard.rd();
-    assert_eq! (aarc.status(), (1, ""));  // AReadGuard holds a shared read lock.
+    assert_eq! (aarc.status(), (1, "", 1));  // AReadGuard holds a shared read lock.
     assert_eq! (*read_guard, 42)}
 
   #[test] fn spid_w_existing() {
@@ -861,20 +866,20 @@ mod tests {
     let aarc: AArc = AArc::none();  // start empty
     // spid initializes with T::default() if empty, returns AReadGuard
     let guard = aarc.spid::<i32>().unwrap();
-    assert_eq! (aarc.status(), (1, ""));  // Snapshot shows 1 reader, 0 writers.
+    assert_eq! (aarc.status(), (1, "", 1));  // Snapshot shows 1 reader, 0 writers.
     assert_eq! (*guard, 0);  // AReadGuard derefs to &T.
 
     let recovered_aarc = guard.aarc();
-    assert_eq! (recovered_aarc.status(), (1, ""));
+    assert_eq! (recovered_aarc.status(), (1, "", 2));
 
     drop (guard);  // Must drop AReadGuard before spin_wr; no reader→writer upgrade.
 
     // spin_wr acquires exclusive write lock
     let write_guard = aarc.spin_wr::<i32>().unwrap();
-    assert_eq! (aarc.status(), (0, "write-locked"));  // Snapshot shows 0 readers, 1 writer.
+    assert_eq! (aarc.status(), (0, "write-locked", 2));  // Snapshot shows 0 readers, 1 writer.
 
     let recovered_aarc2 = write_guard.aarc();
-    assert_eq! (recovered_aarc2.status(), (0, "write-locked"));
+    assert_eq! (recovered_aarc2.status(), (0, "write-locked", 3));
 
     // set drops the old value inside, then stores the new one (can even change type)
     let mut write_guard = write_guard.set (42i32);
@@ -1068,7 +1073,7 @@ mod tests {
     let val = aarc.take(100).unwrap();  // Takes stored i32, sets EMPTY_BIT; control block stays allocated/connected.
     assert! (val.is_some());
     assert! (aarc.is_none());
-    assert_eq! (aarc.status(), (0, "empty"));  // Taken state has no active locks.
+    assert_eq! (aarc.status(), (0, "empty", 1));  // Taken state has no active locks.
 
     // Reads spin-out while empty (EMPTY_BIT set, not null pointer).
     let err = aarc.spinʳ::<i32> (10) .err().unwrap();
@@ -1118,7 +1123,7 @@ mod tests {
     assert! (res.is_err());
 
     // Unlike std::Mutex, no poisoning — just dropped. AArc is now empty, not broken.
-    assert_eq! (aarc.status(), (0, "empty"));  // Write lock is cleared during panic unwind.
+    assert_eq! (aarc.status(), (0, "empty", 1));  // Write lock is cleared during panic unwind.
     let err = aarc.spinʳ::<i32> (10) .err().unwrap();
     assert_eq! (err, AArcErr::SpinOut);
 
@@ -1292,13 +1297,13 @@ mod tests {
     // Multiple AReadGuards can coexist (shared read access)
     { let guard1 = aarc.spin_rd::<i32>().unwrap();
       let guard2 = aarc.spin_rd::<i32>().unwrap();
-      assert_eq! (aarc.status(), (2, ""));  // Two active readers.
+      assert_eq! (aarc.status(), (2, "", 1));  // Two active readers.
       assert_eq! (*guard1, 0);
       assert_eq! (*guard2, 0); }
-    assert_eq! (aarc.status(), (0, ""));  // Both readers dropped.
+    assert_eq! (aarc.status(), (0, "", 1));  // Both readers dropped.
     // If AReadGuard::drop failed to clear READ_INC, this would spin-out
     let mut write_guard = aarc.spin_wr::<i32>().unwrap();
-    assert_eq! (aarc.status(), (0, "write-locked"));  // One active writer.
+    assert_eq! (aarc.status(), (0, "write-locked", 1));  // One active writer.
     *write_guard = 42;
     assert_eq! (*write_guard, 42);}
 
@@ -1329,43 +1334,43 @@ mod tests {
     let _ = aarc.spid::<i32>().unwrap();
     let read_guard = aarc.spin_rd::<i32>().unwrap();
     assert_eq! (*read_guard, 0);
-    assert_eq! (aarc.status(), (1, ""));
-    // upgrade converts AReadGuard to AWriteGuard without downcasting
+    assert_eq! (aarc.status(), (1, "", 1));
+    // wr converts AReadGuard to AWriteGuard without downcasting
     let mut write_guard = read_guard.wr().unwrap();
-    assert_eq! (aarc.status(), (0, "write-locked"));
+    assert_eq! (aarc.status(), (0, "write-locked", 1));
     *write_guard = 42;
-    // downgrade converts AWriteGuard to AReadGuard without downcasting
+    // rd converts AWriteGuard to AReadGuard without downcasting
     let read_guard2 = write_guard.rd();
-    assert_eq! (aarc.status(), (1, ""));
+    assert_eq! (aarc.status(), (1, "", 1));
     assert_eq! (*read_guard2, 42)}
 
   #[test] fn typed_aarc() {
     let aarc = AArc::<i32>::none();
-    assert_eq! (fomat! ([aarc]), "AArc { readers: 0, status: \"null\" }");
+    assert_eq! (fomat! ([aarc]), "AArc { refs: 0, readers: 0, status: \"null\" }");
     let mut guard = aarc.spidʷ (100) .unwrap();
     assert_eq! (*guard, 0);
-    assert_eq! (fomat! ([aarc]), "AArc { readers: 0, status: \"write-locked\", data: <locked or empty> }");
+    assert_eq! (fomat! ([aarc]), "AArc { refs: 1, readers: 0, status: \"write-locked\", data: <locked or empty> }");
     *guard = 42;
     let read_guard = guard.rd();
     assert_eq! (*read_guard, 42);
-    assert_eq! (fomat! ([aarc]), "AArc { readers: 1, data: 42 }");
+    assert_eq! (fomat! ([aarc]), "AArc { refs: 1, readers: 1, data: 42 }");
     drop (read_guard);
     aarc.take(100).unwrap();
-    assert_eq! (fomat! ([aarc]), "AArc { readers: 0, status: \"empty\" }")}
+    assert_eq! (fomat! ([aarc]), "AArc { refs: 1, readers: 0, status: \"empty\" }")}
 
   #[test] fn upgrade_spin_out() {
     let aarc: AArc = AArc::none();
     let _ = aarc.spid::<i32>().unwrap();
     let read_guard1 = aarc.spin_rd::<i32>().unwrap();
     let read_guard2 = aarc.spin_rd::<i32>().unwrap();
-    // upgradeᵗ fails if there are other active readers, returning the original AReadGuard
+    // wrᵗ fails if there are other active readers, returning the original AReadGuard
     let (recovered_guard, err) = read_guard1.wrᵗ (10) .err().unwrap();
     assert_eq! (err, AArcErr::SpinOut);
-    assert_eq! (aarc.status(), (2, ""));
+    assert_eq! (aarc.status(), (2, "", 1));
     assert_eq! (*recovered_guard, 0);
     drop (recovered_guard);
     drop (read_guard2);
-    assert_eq! (aarc.status(), (0, ""))}
+    assert_eq! (aarc.status(), (0, "", 1))}
 
   #[test] fn conditional_spins() {
     let aarc = AArc::<i32>::none();

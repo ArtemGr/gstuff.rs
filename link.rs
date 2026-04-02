@@ -8,7 +8,7 @@ use std::any::Any;
 use std::sync::{Mutex, MutexGuard};
 
 type IndexMap<K, V> = IndexMapB<K, V, gxhash::GxBuildHasher>;
-pub type Fun = fn (&str, u64, &mut dyn Any) -> Re<Json>;
+pub type Fun = fn (&str, u64, &dyn Any) -> Re<Json>;
 pub type Map = IndexMap<InlinableString, Fun>;
 
 static FUNS: Mutex<Option<Map>> = Mutex::new (None);
@@ -18,7 +18,7 @@ pub fn funs() -> Re<MutexGuard<'static, Option<Map>>> {
   if funs.is_none() {*funs = Some (IndexMap::default())}
   return Re::Ok (funs)}
 
-pub fn c (fun: &str, s: &str, u: u64, a: &mut dyn Any) -> Re<Json> {
+pub fn c (fun: &str, s: &str, u: u64, a: &dyn Any) -> Re<Json> {
   let funs = FUNS.lock()?;
   let func: Option<&Fun> = match *funs {
     Some (ref funs) => funs.get (fun),
@@ -31,4 +31,4 @@ pub fn c (fun: &str, s: &str, u: u64, a: &mut dyn Any) -> Re<Json> {
 
 /// Like `c`, but uses nil arguments and returns ()
 pub fn c0 (fun: &str) -> Re<()> {
-  c (fun, "", 0, &mut 0)?; Re::Ok(())}
+  c (fun, "", 0, &0)?; Re::Ok(())}

@@ -2,18 +2,39 @@
 #[cfg(unix)] use std::os::fd::RawFd;
 use core::cell::RefCell;
 use core::mem::MaybeUninit;
-use crate::{fail, LinesIt};
+use crate::{b2s, fail, LinesIt};
 use crate::aarc::AArc;
 use crate::re::Re;
-use fomat_macros::{fomat, pintln};
+use fomat_macros::{fomat, pintln, wite};
 use memchr::{memchr, memrchr};
 use memmap2::{Mmap, MmapOptions, MmapMut};
+use std::fmt;
 use std::ffi;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::str::from_utf8_unchecked;
+
+pub struct LDiff<'a> (pub &'a [u8], pub &'a [u8]);
+impl<'a> fmt::Display for LDiff<'a> {
+  fn fmt (&self, fm: &mut fmt::Formatter) -> fmt::Result {
+    let (la, lb) = (self.0, self.1);
+    let (mut ai, mut bi) = (0, 0);
+    let mut diff = usize::MAX;
+    loop {
+      let a_end = la.len() <= ai || la[ai] == b'\n';
+      let b_end = lb.len() <= bi || lb[bi] == b'\n';
+      if a_end && b_end {break}
+      if diff == usize::MAX {
+        if a_end || b_end || la[ai] != lb[bi] {diff = ai}}
+      if !a_end {ai += 1}
+      if !b_end {bi += 1}}
+    if diff == usize::MAX {diff = ai}
+    wite! (fm,
+      (b2s (&la[..ai])) "\n"
+      for _ in 0..diff {" "}
+      "^\n" (b2s (&lb[..bi])))}}
 
 /// Unlocks on Drop
 #[cfg(not(windows))]
@@ -122,7 +143,7 @@ impl LockAndLoad {
         file.write_all (header)?;
         mmap = unsafe {MmapOptions::new().map (&file)?}}
       if mmap.len() < header.len() || &mmap[..header.len()] != header {
-        fail! ([path.as_ref()] ": unexpected header")}}
+        fail! ([path.as_ref()] ": unexpected header\n" (LDiff (&mmap, header)))}}
 
     Re::Ok (LockAndLoad {header, lock, mmap, file})}
 
@@ -171,9 +192,8 @@ impl LockAndLoad {
       let len = 4096.min (fidat.len() - off);
       let new_blk = &fidat[off..off + len];
       let old_len = len.min (self.mmap.len().saturating_sub (off));
-      let old_blk = &self.mmap[off..off + old_len];
 
-      if old_len != len || new_blk != old_blk {
+      if old_len != len || new_blk != &self.mmap[off..off + old_len] {
         changes += 1;
         if chain_start.is_none() {chain_start = Some (off)}
       } else if let Some (start) = chain_start.take() {
@@ -316,7 +336,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
       assert_eq! (line, expected);
       ix += 1;
       if it.lines.len() <= ix {ix = 0}})}}
-
+//dai//
 #[cfg(feature = "sq")] pub mod sq {
   use core::cell::UnsafeCell;
   use core::ffi::c_void;
@@ -334,7 +354,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
   use fomat_macros::{fomat, wite};
   use indexmap::IndexMap as IndexMapB;
   use inlinable_string::{InlinableString, StringExt};
-  use rusqlite::{ffi as s3f, CachedStatement, Connection, Rows};
+  use rusqlite::{ffi as s3f, CachedStatement, Connection as SQonn, OpenFlags as SQFlags, Rows, Params};
   use serde_json::{self as json, json, Value as Json};
   use smallvec::SmallVec;
   use std::collections::VecDeque;
@@ -363,15 +383,16 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
     "PRAGMA " (schema) ".journal_size_limit = 1048576;"  // truncate unused WAL to 1 MiB
     "PRAGMA wal_autocheckpoint = 0;")}  // checkpoints explicitly or at database close
 
-  pub fn sqdaver (db: &Connection) -> Re<u32> {
+  pub fn sqdaver (db: &SQonn) -> Re<u32> {
     let s3: *mut s3f::sqlite3 = unsafe {db.handle()};
     // https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntldataversion
     let mut sqdaver = 0u32;
-    let rc = unsafe {s3f::sqlite3_file_control (s3, null(), s3f::SQLITE_FCNTL_DATA_VERSION, &mut sqdaver as *mut u32 as *mut c_void)};
+    let rc = unsafe {s3f::sqlite3_file_control (s3, null(),
+      s3f::SQLITE_FCNTL_DATA_VERSION, &mut sqdaver as *mut u32 as *mut c_void)};
     if rc != 0 {fail! ("!sqdaver: " [rc])}
     Re::Ok (sqdaver)}
 
-  pub fn quick_check (db: &Connection, path: Option<&dyn AsRef<Path>>) -> Re<()> {
+  pub fn quick_check (db: &SQonn, path: Option<&dyn AsRef<Path>>) -> Re<()> {
     use std::rc::Rc;
     let mut st = db.prepare ("PRAGMA main.quick_check")?; let mut rows = st.query([])?;
     while let Some (row) = rows.next()? {
@@ -380,10 +401,97 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
       fail! (if let Some (path) = path {(path.as_ref().display()) ' '} "quick_check: " (c0))}
     Re::Ok(())}
 
-  /// fetch `i32` at `column` from the next row, or `0` if NULL/end
-  pub fn z32 (rows: &mut Rows, column: usize) -> Re<i32> {
+  /// fetch `i32` at `column` from the first row of `sql`, or `0` if NULL/end
+  pub fn z32<P: Params> (sq: &SQonn, column: usize, params: P, sql: &str) -> Re<i32> {
+    let mut stmt = sq.prepare_cached (sql)?;
+    let mut rows = stmt.query (params)?;
     let Some (row) = rows.next()? else {return Re::Ok (0)};
     Re::Ok (row.get::<_, Option<i32>> (column)? .unwrap_or (0))}
+
+  /// fetch `f32` at `column` from the first row of `sql`, or `NAN` if NULL/end
+  pub fn f32<P: Params> (sq: &SQonn, column: usize, params: P, sql: &str) -> Re<f32> {
+    let mut stmt = sq.prepare_cached (sql)?;
+    let mut rows = stmt.query (params)?;
+    let Some (row) = rows.next()? else {return Re::Ok (f32::NAN)};
+    Re::Ok (row.get::<_, Option<f32>> (column)? .unwrap_or (f32::NAN))}
+
+  /// fetch text at `column` from the first row of `sql`, or empty if NULL/end
+  pub fn is<P: Params> (sq: &SQonn, column: usize, params: P, sql: &str) -> Re<InlinableString> {
+    let mut stmt = sq.prepare_cached (sql)?;
+    let mut rows = stmt.query (params)?;
+    let Some (row) = rows.next()? else {return Re::Ok (InlinableString::new())};
+    let s = row.get_ref (column)? .as_str()?;
+    Re::Ok (InlinableString::from (s))}
+
+  /// fetch `i64` at `column` from the first row of `sql`, or `0` if NULL/end
+  pub fn z64<P: Params> (sq: &SQonn, column: usize, params: P, sql: &str) -> Re<i64> {
+    let mut stmt = sq.prepare_cached (sql)?;
+    let mut rows = stmt.query (params)?;
+    let Some (row) = rows.next()? else {return Re::Ok (0)};
+    Re::Ok (row.get::<_, Option<i64>> (column)? .unwrap_or (0))}
+
+  /// fetch `f64` at `column` from the first row of `sql`, or `NAN` if NULL/end
+  pub fn f64<P: Params> (sq: &SQonn, column: usize, params: P, sql: &str) -> Re<f64> {
+    let mut stmt = sq.prepare_cached (sql)?;
+    let mut rows = stmt.query (params)?;
+    let Some (row) = rows.next()? else {return Re::Ok (f64::NAN)};
+    Re::Ok (row.get::<_, Option<f64>> (column)? .unwrap_or (f64::NAN))}
+
+  /// fetch text at `column` from the first row of `sql`, or empty if NULL/end
+  pub fn s<P: Params> (sq: &SQonn, column: usize, params: P, sql: &str) -> Re<String> {
+    let mut stmt = sq.prepare_cached (sql)?;
+    let mut rows = stmt.query (params)?;
+    let Some (row) = rows.next()? else {return Re::Ok (String::new())};
+    let s = row.get_ref (column)? .as_str()?;
+    Re::Ok (String::from (s))}
+
+  pub trait SqFetch {
+    /// fetch `i32` at `column` from the first row of `sql`, or `0` if NULL/end
+    fn z32<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<i32>;
+    /// fetch `f32` at `column` from the first row of `sql`, or `NAN` if NULL/end
+    fn f32<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<f32>;
+    /// fetch text at `column` from the first row of `sql`, or empty if NULL/end
+    fn is<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<InlinableString>;
+    /// fetch `i64` at `column` from the first row of `sql`, or `0` if NULL/end
+    fn z64<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<i64>;
+    /// fetch `f64` at `column` from the first row of `sql`, or `NAN` if NULL/end
+    fn f64<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<f64>;
+    /// fetch text at `column` from the first row of `sql`, or empty if NULL/end
+    fn s<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<String>;
+    /// shorthand for `prepare_cached`
+    fn pc<'a> (&'a self, sql: &str) -> Re<rusqlite::CachedStatement<'a>>;}
+
+  impl SqFetch for SQonn {
+    fn z32<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<i32> {
+      z32 (self, column, params, sql)}
+    fn f32<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<f32> {
+      f32 (self, column, params, sql)}
+    fn is<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<InlinableString> {
+      is (self, column, params, sql)}
+    fn z64<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<i64> {
+      z64 (self, column, params, sql)}
+    fn f64<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<f64> {
+      f64 (self, column, params, sql)}
+    fn s<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<String> {
+      s (self, column, params, sql)}
+    fn pc<'a> (&'a self, sql: &str) -> Re<rusqlite::CachedStatement<'a>> {
+      Re::Ok (self.prepare_cached (sql)?)}}
+
+  impl SqFetch for TSafe<SQonn> {
+    fn z32<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<i32> {
+      z32 (&self.0, column, params, sql)}
+    fn f32<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<f32> {
+      f32 (&self.0, column, params, sql)}
+    fn is<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<InlinableString> {
+      is (&self.0, column, params, sql)}
+    fn z64<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<i64> {
+      z64 (&self.0, column, params, sql)}
+    fn f64<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<f64> {
+      f64 (&self.0, column, params, sql)}
+    fn s<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<String> {
+      s (&self.0, column, params, sql)}
+    fn pc<'a> (&'a self, sql: &str) -> Re<rusqlite::CachedStatement<'a>> {
+      Re::Ok (self.0.prepare_cached (sql)?)}}
 
   pub struct SqRows {
     rows: ManuallyDrop<UnsafeCell<Rows<'static>>>,  // pImpl to `sth`
@@ -438,7 +546,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
       ManuallyDrop::drop (&mut self.db)}}}
 
   pub fn run2rows (db: &SConn, sql: &[u8]) -> Re<SqRows> {
-    let dbʹ = db.spin_rd::<TSafe<rusqlite::Connection>>()?;
+    let dbʹ = db.spin_rd()?;
     let stmt: CachedStatement<'static> = unsafe {transmute (dbʹ.0.prepare_cached (b2s (sql))?)};
     let st = AArc::any (TSafe (stmt));
     let mut st_guard = st.spin_wr::<TSafe<CachedStatement<'static>>>()?;
@@ -464,11 +572,11 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
     ($db: expr, $params: expr, $($fq: tt)+) => {{
       let mut sql = smallvec::SmallVec::<[u8; 256]>::new();
       fomat_macros::wite! (&mut sql, $($fq)+)?;
-      let dbʹ = $db.spin_wr::<$crate::TSafe<rusqlite::Connection>>()?;
+      let dbʹ = $db.spinʷ (-1234)?;
       let stmt: rusqlite::CachedStatement<'static> = unsafe {
         core::mem::transmute (dbʹ.0.prepare_cached (core::str::from_utf8_unchecked (&sql))?)};
       let st = $crate::aarc::AArc::any ($crate::TSafe (stmt));
-      let mut st_guard = st.spin_wr::<$crate::TSafe<rusqlite::CachedStatement<'static>>>()?;
+      let mut st_guard = st.spinʷ::<$crate::TSafe<rusqlite::CachedStatement<'static>>> (-1234)?;
       let rs = st_guard.0.query ($params)?;
       unsafe {$crate::lines::sq::SqRows::new (
         core::mem::transmute (rs),
@@ -479,7 +587,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
     ($db: expr, $params: expr, $($fq: tt)+) => {{
       let mut buf = smallvec::SmallVec::<[u8; 256]>::new();
       fomat_macros::wite! (&mut buf, $($fq)+)?;
-      let dbʹ = $db.spin_wr::<$crate::TSafe<rusqlite::Connection>>()?;
+      let dbʹ = $db.spinʷ (-1234)?;
       let mut sth = dbʹ.0.prepare_cached (unsafe {core::str::from_utf8_unchecked (&buf)})?;
       sth.execute ($params)?}};
 
@@ -501,7 +609,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
       fmt::Result::Ok(())}}
 
   pub fn run2js (db: &SConn, sql: &[u8]) -> Re<Vec<IndexMap<InlinableString, Json>>> {
-    let dbʹ = db.spin_rd::<TSafe<rusqlite::Connection>>()?;
+    let dbʹ = db.spin_rd()?;
     let mut st = dbʹ.0.prepare (b2s (sql))?;
     let cols = st.column_count();
     let mut cnames = Vec::with_capacity (cols);
@@ -523,10 +631,8 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
       js.push (jr)}
     Re::Ok (js)}
 
-  /// Should [prefer exclusive access](https://github.com/rusqlite/rusqlite/issues/342#issuecomment-592661330), `spin_write`,
-  /// unless we're using the database from a single thread anyway.
-  pub type SConn = AArc;
-  pub fn sconn (db: Connection) -> SConn {AArc::any (TSafe (db))}}
+  pub type SConn = AArc<TSafe<SQonn>>;
+  pub fn sconn (db: SQonn) -> SConn {AArc::new (TSafe (db))}}
 
 #[cfg(feature = "sqlite")] pub mod csq {
   // cf. https://www.sqlite.org/vtab.html, https://sqlite.org/src/file?name=ext/misc/csv.c&ci=trunk
@@ -537,7 +643,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
   use crate::lines::Re;
   use crate::{log, LinesIt};
   use fomat_macros::{fomat, wite};
-  use rusqlite::{vtab, Connection, Error, Result};
+  use rusqlite::{vtab, Connection as SQonn, Error, Result};
   use rusqlite::ffi::{sqlite3_vtab, sqlite3_vtab_cursor};
   use rusqlite::types::Value;
   use smallvec::SmallVec;
@@ -643,12 +749,12 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
   impl vtab::CreateVTab<'_> for CsqVTab {
     const KIND: vtab::VTabKind = vtab::VTabKind::Default;}
 
-  pub fn csq_load (db: &Connection) -> Re<()> {
+  pub fn csq_load (db: &SQonn) -> Re<()> {
     db.create_module ("csq", vtab::read_only_module::<CsqVTab>(), None)?;
     Re::Ok(())}
 
   pub fn csq_poc (path: &str) -> Re<()> {
-    let db = Connection::open_in_memory()?;
+    let db = SQonn::open_in_memory()?;
     db.create_module ("csq", vtab::read_only_module::<CsqVTab>(), None)?;
     let sql = fomat! ("CREATE VIRTUAL TABLE vtab USING csq (path=" (path) ")");
     db.execute_batch (&sql)?;
