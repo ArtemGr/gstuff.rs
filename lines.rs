@@ -336,9 +336,10 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
       assert_eq! (line, expected);
       ix += 1;
       if it.lines.len() <= ix {ix = 0}})}}
-//dai//
+
 #[cfg(feature = "sq")] pub mod sq {
   use core::cell::UnsafeCell;
+  use core::convert::TryFrom;
   use core::ffi::c_void;
   use core::hint::spin_loop;
   use core::mem::{transmute, ManuallyDrop};
@@ -354,7 +355,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
   use fomat_macros::{fomat, wite};
   use indexmap::IndexMap as IndexMapB;
   use inlinable_string::{InlinableString, StringExt};
-  use rusqlite::{ffi as s3f, CachedStatement, Connection as SQonn, OpenFlags as SQFlags, Rows, Params};
+  use rusqlite::{ffi as s3f, CachedStatement, Connection as SQonn, OpenFlags as SQFlags, Row, Rows, Params};
   use serde_json::{self as json, json, Value as Json};
   use smallvec::SmallVec;
   use std::collections::VecDeque;
@@ -445,6 +446,22 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
     let s = row.get_ref (column)? .as_str()?;
     Re::Ok (String::from (s))}
 
+  /// fetch a tuple from row `row` of `sql`, or `defaults` if past end
+  pub fn r<T, P: Params> (sq: &SQonn, row: usize, defaults: T, params: P, sql: &str) -> Re<T>
+    where T: for<'a> TryFrom<&'a Row<'a>, Error = rusqlite::Error> {
+    let mut stmt = sq.prepare_cached (sql)?;
+    let mut rows = stmt.query (params)?;
+    for _ in 0..row {if rows.next()?.is_none() {return Re::Ok (defaults)}}
+    let Some (rv) = rows.next()? else {return Re::Ok (defaults)};
+    Re::Ok (rv.try_into()?)}
+
+  /// execute `sql` and check that `expect` rows were affected
+  pub fn e<P: Params> (sq: &SQonn, expect: usize, params: P, sql: &str) -> Re<()> {
+    let mut stmt = sq.prepare_cached (sql)?;
+    let ups = stmt.execute (params)?;
+    if ups != expect {fail! ("ups " (ups) " <> " (expect) " expect")}
+    Re::Ok (())}
+
   pub trait SqFetch {
     /// fetch `i32` at `column` from the first row of `sql`, or `0` if NULL/end
     fn z32<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<i32>;
@@ -458,8 +475,13 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
     fn f64<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<f64>;
     /// fetch text at `column` from the first row of `sql`, or empty if NULL/end
     fn s<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<String>;
+    /// fetch a tuple from row `row` of `sql`, or `defaults` if past end
+    fn r<T, P: Params> (&self, row: usize, defaults: T, params: P, sql: &str) -> Re<T>
+      where T: for<'a> TryFrom<&'a Row<'a>, Error = rusqlite::Error>;
     /// shorthand for `prepare_cached`
-    fn pc<'a> (&'a self, sql: &str) -> Re<rusqlite::CachedStatement<'a>>;}
+    fn pc<'a> (&'a self, sql: &str) -> Re<rusqlite::CachedStatement<'a>>;
+    /// execute `sql` and check that `expect` rows were affected
+    fn e<P: Params> (&self, expect: usize, params: P, sql: &str) -> Re<()>;}
 
   impl SqFetch for SQonn {
     fn z32<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<i32> {
@@ -474,8 +496,13 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
       f64 (self, column, params, sql)}
     fn s<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<String> {
       s (self, column, params, sql)}
+    fn r<T, P: Params> (&self, row: usize, defaults: T, params: P, sql: &str) -> Re<T>
+      where T: for<'a> TryFrom<&'a Row<'a>, Error = rusqlite::Error> {
+      r (self, row, defaults, params, sql)}
     fn pc<'a> (&'a self, sql: &str) -> Re<rusqlite::CachedStatement<'a>> {
-      Re::Ok (self.prepare_cached (sql)?)}}
+      Re::Ok (self.prepare_cached (sql)?)}
+    fn e<P: Params> (&self, expect: usize, params: P, sql: &str) -> Re<()> {
+      e (self, expect, params, sql)}}
 
   impl SqFetch for TSafe<SQonn> {
     fn z32<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<i32> {
@@ -490,8 +517,13 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
       f64 (&self.0, column, params, sql)}
     fn s<P: Params> (&self, column: usize, params: P, sql: &str) -> Re<String> {
       s (&self.0, column, params, sql)}
+    fn r<T, P: Params> (&self, row: usize, defaults: T, params: P, sql: &str) -> Re<T>
+      where T: for<'a> TryFrom<&'a Row<'a>, Error = rusqlite::Error> {
+      r (&self.0, row, defaults, params, sql)}
     fn pc<'a> (&'a self, sql: &str) -> Re<rusqlite::CachedStatement<'a>> {
-      Re::Ok (self.0.prepare_cached (sql)?)}}
+      Re::Ok (self.0.prepare_cached (sql)?)}
+    fn e<P: Params> (&self, expect: usize, params: P, sql: &str) -> Re<()> {
+      e (&self.0, expect, params, sql)}}
 
   pub struct SqRows {
     rows: ManuallyDrop<UnsafeCell<Rows<'static>>>,  // pImpl to `sth`
@@ -806,7 +838,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
   #[bench] fn lock_load_rd (bm: &mut test::Bencher) {
     #[cfg(unix)] std::env::set_current_dir ("/tmp") .unwrap();
     gen ("lock_load_rd", 12345);
-    defer! {fs::remove_file ("lock_load_rd") .unwrap()}
+    defer! {let _ = fs::remove_file ("lock_load_rd");}  // NB: Panic in `defer!` risks double-panic.
     bm.iter (|| {
       let fl = super::LockAndLoad::rd (&"lock_load_rd", b"foo,bar,0") .unwrap();
       assert! (123456 < fl.mmap.len())})}
@@ -814,7 +846,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
   #[cfg(unix)] #[test] fn lock_ex_not_rd() {
     std::env::set_current_dir ("/tmp") .unwrap();
     defer! {
-      fs::remove_file ("lock_ex_not_rd") .unwrap();
+      let _ = fs::remove_file ("lock_ex_not_rd");
       fs::remove_file ("lock_ex_not_rd.rd") .unwrap()}  // Tests the forked flag
     let _fl = super::LockAndLoad::ex (&"lock_ex_not_rd", b"") .unwrap();  // Creates and locks the file
     let pid = unsafe {libc::fork()};
@@ -833,7 +865,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
   #[bench] fn lock_ex (bm: &mut test::Bencher) {
     #[cfg(unix)] std::env::set_current_dir ("/tmp") .unwrap();
     gen ("csq_bench-ex.csv", 12345);
-    defer! {fs::remove_file ("csq_bench-ex.csv") .unwrap()}
+    defer! {let _ = fs::remove_file ("csq_bench-ex.csv");}
     bm.iter (|| {
       let file = fs::OpenOptions::new().read (true) .write (true) .create (true)
         .open ("csq_bench-ex.csv") .unwrap();
@@ -859,7 +891,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
   /// verify that `rd` fails against EXCLUSIVE
   #[cfg(all(unix, feature = "sq"))] #[test] fn lock_sq_rd() {
     std::env::set_current_dir ("/tmp") .unwrap();
-    defer! {fs::remove_file ("lock_sq_rd.created") .unwrap(); sqrm ("lock_sq_rd.db3")}
+    defer! {let _ = fs::remove_file ("lock_sq_rd.created"); sqrm ("lock_sq_rd.db3")}
     let pid = unsafe {libc::fork()};
     if pid == 0 {
       sqlock ("lock_sq_rd.db3", true, "lock_sq_rd.created"); std::process::exit (0)
@@ -875,7 +907,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
   /// verify that `ex` fails against SHARED
   #[cfg(all(unix, feature = "sq"))] #[test] fn lock_sq_ex() {
     std::env::set_current_dir ("/tmp") .unwrap();
-    defer! {fs::remove_file ("lock_sq_ex.created") .unwrap(); sqrm ("lock_sq_ex.db3")}
+    defer! {let _ = fs::remove_file ("lock_sq_ex.created"); sqrm ("lock_sq_ex.db3")}
     if unsafe {libc::fork()} == 0 {
       sqlock ("lock_sq_ex.db3", false, "lock_sq_ex.created"); std::process::exit (0)
     } else {
@@ -887,7 +919,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
   #[bench] fn csq_open (bm: &mut test::Bencher) {
     #[cfg(unix)] std::env::set_current_dir ("/tmp") .unwrap();
     gen ("foobar1.csv", 12345);
-    defer! {fs::remove_file (&"foobar1.csv") .unwrap()}
+    defer! {let _ = fs::remove_file (&"foobar1.csv");}
     bm.iter (|| {
       let db = rusqlite::Connection::open_in_memory().unwrap();
       super::csq::csq_load (&db) .unwrap();
@@ -898,7 +930,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
     let db = rusqlite::Connection::open_in_memory().unwrap();
     super::csq::csq_load (&db) .unwrap();
     gen ("foobar2.csv", 12345);
-    defer! {fs::remove_file ("foobar2.csv") .unwrap()}
+    defer! {let _ = fs::remove_file ("foobar2.csv");}
     db.execute_batch ("CREATE VIRTUAL TABLE vt USING csq (path=foobar2.csv)") .unwrap();
     let mut st = db.prepare ("SELECT * FROM vt LIMIT 1") .unwrap();
     bm.iter (|| {
@@ -909,7 +941,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
     let db = rusqlite::Connection::open_in_memory().unwrap();
     super::csq::csq_load (&db) .unwrap();
     gen ("foobar3.csv", 12345);
-    defer! {fs::remove_file ("foobar3.csv") .unwrap()}
+    defer! {let _ = fs::remove_file ("foobar3.csv");}
     db.execute_batch ("CREATE VIRTUAL TABLE vt USING csq (path=foobar3.csv)") .unwrap();
     let st = Box::into_raw (Box::new (db.prepare ("SELECT * FROM vt") .unwrap()));
     let mut rows = Box::into_raw (Box::new (unsafe {(*st).query ([]) .unwrap()}));

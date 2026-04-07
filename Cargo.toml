@@ -22,7 +22,7 @@ base91 = ["smallvec"]
 rdtsc = []  # nop
 re = ["fomat-macros"]
 lines = ["nix", "re", "winapi", "memmap2", "memchr"]
-sqlite = ["base62", "base91", "ser", "gxhash", "lines", "re", "rusqlite", "smallvec", "crossterm", "inlinable_string", "fomat-macros"]
+sqlite = ["base62", "base91", "ser", "gxhash", "lines", "re", "rusqlite", "smallvec", "crossterm", "inlinable_string", "fomat-macros", "scopeguard"]
 sync = ["fast_rsync", "gxhash"]
 link = ["fomat-macros", "gxhash", "indexmap", "inlinable_string", "serde_json"]
 ser = ["serde", "serde_json", "indexmap/serde", "inlinable_string/serde"]
@@ -45,6 +45,7 @@ num-bigint = {version = "0.4", optional = true}
 num-traits = {version = "0.2", optional = true}
 parking_lot = {version = "0.12.5", optional = true}
 rusqlite = {version = "0.38", features = ["bundled", "functions", "vtab"], optional = true}
+scopeguard = {version = "1", optional = true}
 serde = {version = "1", features = ["derive"], optional = true}
 serde_json = {version = "1", optional = true}
 smallvec = {version = "1", optional = true, features = ["const_generics", "union", "write"]}
@@ -52,4 +53,3 @@ winapi = {version = "0.3", optional = true, features = ["errhandlingapi", "filea
 
 [dev-dependencies]
 rand = {version = "0.9", features = ["small_rng"]}
-scopeguard = "1"

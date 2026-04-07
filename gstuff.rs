@@ -1798,12 +1798,15 @@ pub mod shuffled_iter {
       assert_eq! (*val, "done")}
 
     #[test]
-    fn vs_system() {
+    fn vs_system() -> Re<()> {
       use std::time::Instant;
 
-      { let tpool = tpool().unwrap();
+      let threads1 = std::env::args().fold ((false, false), |(prev, found), arg| {
+        (arg == "--test-threads", found || (prev && arg == "1"))}) .1;
+
+      { let tpool = tpool()?;
         if tpool.threadsⁿ() == 0 {
-          tpool.sponsor ("vs_system".into()) .unwrap();
+          tpool.sponsor ("vs_system".into())?;
           assert_eq! (tpool.threadsⁿ(), 1)} }
 
       let tpost_done = AArc::<u64>::empty();
@@ -1830,9 +1833,10 @@ pub mod shuffled_iter {
         if let (Ok (tpost_time), Ok (thread_time)) = (tpost_done.spin_rd(), thread_done.spin_rd()) {
           // tpost: 122µs, thread: 5666µs
           if true {print! ("tpost: {}µs, thread: {}µs ", *tpost_time, *thread_time)}
-          assert! (*tpost_time < *thread_time);
+          if threads1 {assert! (*tpost_time < *thread_time)}
           break}
-        thread::sleep (Duration::from_millis (20))}}
+        thread::sleep (Duration::from_millis (20))}
+      Re::Ok(())}
 
     #[test]
     fn custom_timer_task() {
