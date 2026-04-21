@@ -478,6 +478,7 @@ impl<T: Send + Sync + 'static> AArc<T> {
   pub fn spini (&self, init: &mut dyn FnMut() -> Re<T>) -> Result<AReadGuard<'_, T, T>, AArcErr> {
     self.spiniʳ (unsafe {SPIN_OUT as i32}, init)}
 
+  /// Initializes with `T::default()` if empty. Spins to SPIN_OUT if downcast fails (for `Any`)
   pub fn spid (&self) -> Result<AReadGuard<'_, T, T>, AArcErr> where T: Default {
     self.spidʳ (unsafe {SPIN_OUT as i32})}
 
@@ -828,7 +829,7 @@ impl<'a, T: ?Sized, C: ?Sized> Drop for AWriteGuard<'a, T, C> {
 #[cfg(all(test, feature = "nightly", feature = "re", feature = "fomat-macros"))]
 mod tests {
   extern crate test;
-  use crate::fail;
+  use crate::{fail, now_ms};
   use std::panic::{self, UnwindSafe};
   use std::sync::{Arc, Mutex, RwLock};
   use std::sync::atomic::AtomicUsize;
@@ -872,7 +873,7 @@ mod tests {
     let recovered_aarc = guard.aarc();
     assert_eq! (recovered_aarc.status(), (1, "", 2));
 
-    drop (guard);  // Must drop AReadGuard before spin_wr; no reader→writer upgrade.
+    drop (guard);  // Must drop AReadGuard before spin_wr.
 
     // spin_wr acquires exclusive write lock
     let write_guard = aarc.spin_wr::<i32>().unwrap();
@@ -1059,6 +1060,25 @@ mod tests {
     let (recovered_guard, err) = result.err().unwrap();
     assert_eq! (err, "empty");
     assert_eq! (recovered_guard.len(), 0)}
+
+  #[test] fn zoo_spin_two_types() -> Re<()> {
+    let aarc: AArc = AArc::none();
+    // animal picked at random, stored type-erased
+    let pick_cat = now_ms() & 1 == 0;
+    if pick_cat {aarc.spin_set (Cat)?;} else {aarc.spin_set (Dog)?;}
+
+    // try Cat, then Dog; outer loop is the retry (covers transient write-lock races)
+    // Seing how spin_rd blocks on type mismatch until SPIN_OUT,
+    // a bounded attempt is needed to try multiple concrete types sequentially.
+    let mut speech: Option<&'static str> = None;
+    for _ in 0..100 {
+      if let Ok (g) = aarc.spinʳ::<Cat> (1) {speech = Some (g.speak()); break}
+      if let Ok (g) = aarc.spinʳ::<Dog> (1) {speech = Some (g.speak()); break}
+      // Neither type matched yet (or briefly write-locked): yield and retry.
+      spin_yield()}
+    let speech = speech?;
+    if pick_cat {assert_eq! (speech, "meow")} else {assert_eq! (speech, "woof")}
+    Re::Ok(())}
 
   #[test] fn take() {
     let aarc: AArc = AArc::none();
