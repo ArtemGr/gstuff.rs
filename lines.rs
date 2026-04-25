@@ -1051,7 +1051,7 @@ impl Stat {
     let pathᶜ = ffi::CString::new (path.as_ref().to_str()?)?;
     let mut fl = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOCTTY;
     // Processes lacking CAP_FOWNER cannot bypass ownership checks for O_NOATIME
-    if flags & 0b01 == 0 {fl |= libc::O_NOATIME}
+    if flags & 0b01 == 0 {fl |= libc::O_NOATIME}  // 0b01 (skip O_NOATIME) is necessary for /dev/shm.
     // https://man7.org/linux/man-pages/man2/open.2.html
     let fd = unsafe {libc::open (pathᶜ.as_ptr(), fl, 0)};
     if fd == -1 {
@@ -1132,6 +1132,36 @@ impl Stat {
     } else {
       unsafe {libc::closedir (*dir);}}}}
 
+/// `Dir` wraps an open directory `RawFd` on Unix, enabling `openat`/`fstatat`/`unlinkat`
+/// operations scoped to that descriptor. `Send + Sync`.
+/// Public field `fd: RawFd` is available for passing to other `libc` calls.
+///
+/// * `fn new (path: &dyn AsRef<Path>, flags: i8) -> Re<Dir>`
+///   Opens directory at `path`. `flags` bits:
+///    `0b01` - omit `O_NOATIME`, necessary for /dev/shm;
+///    `0b10` - `mkdir` the path if it does not exist (`ENOENT`).
+/// * `fn list (&self, cb: &mut dyn FnMut (&[u8]) -> Re<bool>) -> Re<()>`
+///   Iterates entries via `readdir`, passing raw byte names to `cb`. Skips `.` and `..`.
+///   Rewinds on repeated calls. Stops early when `cb` returns `Re::Ok(false)`.
+/// * `fn file (&self, name: &[u8], creat: bool, append: bool) -> Re<fs::File>`
+///   Opens a file relative to the directory fd via `openat`.
+///   `creat` - `O_CREAT`; `append` - `O_APPEND`.
+/// * `fn stat (&self, name: &[u8]) -> Re<Option<Stat>>`
+///   Stats a path relative to the directory fd via `fstatat (AT_SYMLINK_NOFOLLOW)`.
+///   Returns `Ok(None)` when the entry does not exist.
+/// * `fn unlink (&self, name: &[u8], dir: bool) -> Re<()>`
+///   Removes a file (`dir=false`) or directory (`dir=true`, `AT_REMOVEDIR`) via `unlinkat`.
+///   Unlinking during an active `list` may cause entries to be skipped on some filesystems.
+///
+/// ### `Stat` Fields and Methods
+/// * `len: i64` - file size in bytes
+/// * `lmc: u64` - last-modified time in centiseconds since Unix epoch
+/// * `dir: bool` - `true` if the entry is a directory
+/// * `link: bool` - `true` if the entry is a symlink
+/// * `fn ageᶜ (&self, cs: i64) -> i64` - age in centiseconds (`cs − lmc`); `cs = 0` - age from current time.
+///
+/// ### Related
+/// * `fn fstat (fd: RawFd) -> Re<Stat>` - stats an already-open file descriptor via `libc::fstat`.
 #[cfg(not(unix))] pub struct Dir {
   _path: PathBuf}
 

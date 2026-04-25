@@ -342,12 +342,11 @@ pub static INDENT: IniMutex<(inlinable_string::InlinableString, i8)> = IniMutex:
 ///
 /// Example:
 ///
-///     use core::mem::MaybeUninit;
 ///     use std::io::Write;
-///     #[allow(invalid_value)] let mut foobar: [u8; 128] = unsafe {MaybeUninit::uninit().assume_init()};
+///     let mut foobar: [u8; 128] = [0; 128];
 ///     let foobar = gstring! (foobar, {
-///         write! (foobar, "foo") .expect ("!write");
-///         write! (foobar, "bar") .expect ("!write");
+///       write! (foobar, "foo")?;
+///       write! (foobar, "bar")?;
 ///     });
 ///
 /// Alternatives: https://crates.io/crates/stack.
@@ -403,6 +402,13 @@ pub const fn days_from_civil (mut y: i32, m: u32, d: u32) -> i32 {
 pub const fn ymd2dow (mut y: i32, m: i32, mut d: i32) -> i32 {
   if m < 3 {y -= 1} else {d -= 2}
   (23*m/9 + d + 4 + y/4 - y/100 + y/400 + y) % 7}
+
+/// 0 = Sun, 1 = Mon .. 6 = Sat
+pub const fn ics2dow (ics: i64) -> i32 {
+  let y = (ics / 100_00_00_00_00_00) as i32 + 2000;
+  let m = ((ics / 100_00_00_00_00) % 100) as i32;
+  let d = ((ics / 100_00_00_00) % 100) as i32;
+  ymd2dow (y, m, d)}
 
 /// into integer with centiseconds "%y%m%d%H%M%S%.2f"
 #[cfg(feature = "chrono")]
