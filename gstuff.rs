@@ -202,7 +202,7 @@ pub fn status_line (file: &str, line: u32, status: &str) {
   use std::hash::Hasher;
 
   #[allow(static_mut_refs)]
-    if let Ok (mut status_line) = unsafe {STATUS_LINE.spin_defaultᵗ (SPIN_OUT)} {
+    if let Ok (mut status_line) = unsafe {STATUS_LINE.spidᵗ (SPIN_OUT)} {
       let mut stdout = stdout();
       let old_hash = {let mut hasher = DefaultHasher::new(); hasher.write (status_line.as_bytes()); hasher.finish()};
       status_line.clear();
@@ -230,7 +230,7 @@ pub fn status_line_clear() -> String {
   use io::{stdout, Write};
   let mut ret = String::new();
   #[allow(static_mut_refs)]
-  if let Ok (mut status_line) = unsafe {STATUS_LINE.spin_defaultᵗ (SPIN_OUT)} {
+  if let Ok (mut status_line) = unsafe {STATUS_LINE.spidᵗ (SPIN_OUT)} {
     if *ISATTY && !status_line.is_empty() {
       let mut stdout = stdout();
         STATUS_LINE_LM.s (now_ms() as usize);
@@ -248,7 +248,7 @@ pub fn with_status_line (code: &dyn Fn()) {
   use io::{stdout, Write};
 
   #[allow(static_mut_refs)]
-  if let Ok (status_line) = unsafe {STATUS_LINE.spin_defaultᵗ (SPIN_OUT)} {
+  if let Ok (status_line) = unsafe {STATUS_LINE.spidᵗ (SPIN_OUT)} {
     if !*ISATTY || status_line.is_empty() {
       code()
     } else {
@@ -282,7 +282,7 @@ pub static INDENT: IniMutex<(inlinable_string::InlinableString, i8)> = IniMutex:
     if $on == 2 {
       log! ($($args)+)
     } else if $on == 1 {  // Display 1s only if indent count is positive
-      let i1 = $crate::INDENT.spin_default().1;
+      let i1 = $crate::INDENT.spid().expect ("!spin") .1;
       if 0 <= i1 {log! ($($args)+)}}};
 
   (t $time: expr => $delay: expr, $($args: tt)+) => {{  // $delay repeat by $time
@@ -299,7 +299,7 @@ pub static INDENT: IniMutex<(inlinable_string::InlinableString, i8)> = IniMutex:
       use fomat_macros::{wite, fomat};
       use std::io::Write;
       let tty = *$crate::ISATTY;
-      let i0 = $crate::INDENT.spin_default().0.clone();
+      let i0 = $crate::INDENT.spid().expect ("!spin") .0.clone();
       let mut stdout = std::io::stdout();
       if tty {let _ = stdout.queue ($command);}
       let _ = wite! (&mut stdout,
@@ -323,7 +323,7 @@ pub static INDENT: IniMutex<(inlinable_string::InlinableString, i8)> = IniMutex:
   ($($args: tt)+) => {{
     $crate::with_status_line (&|| {
       use fomat_macros::{pintln, fomat};
-      let i0 = $crate::INDENT.spin_default().0.clone();
+      let i0 = $crate::INDENT.spid().expect ("!spin") .0.clone();
       pintln! (
         ($crate::short_log_time ($crate::now_ms())) ' '
         (i0)
@@ -987,10 +987,8 @@ impl<T> IniMutex<T> {
       Ok (lock) => Err (lock),
       Err (au) => Err (au)}}
 
-  pub fn spin (&self) -> IniMutexGuard<'_, T> {
-    loop {
-      if let Ok (lock) = self.lock() {return lock}
-      spin_yield()}}
+  pub fn spin (&self) -> Result<IniMutexGuard<'_, T>, &'static str> {
+    self.spinᵗ (unsafe {SPIN_OUT})}
 
   /// “spin-out” if out of `spins`
   pub fn spinᵗ (&self, spins: u32) -> Result<IniMutexGuard<'_, T>, &'static str> {
@@ -1021,11 +1019,7 @@ impl<T> IniMutex<T> {
 
   #[cfg(feature = "re")]
   pub fn spin_init (&self, init: &mut dyn FnMut() -> re::Re<T>) -> Result<IniMutexGuard<'_, T>, String> {
-    loop {
-      match self.lock_init (init) {
-        Ok (lock) => break Ok (lock),
-        Err (LockInitErr::Lock (_l)) => spin_yield(),
-        Err (LockInitErr::Init (err)) => break Err (err)}}}
+    self.spin_initᵗ (unsafe {SPIN_OUT}, init)}
 
   /// “spin-out” if out of `spins`
   #[cfg(feature = "re")]
@@ -1078,12 +1072,10 @@ impl<T: Default> IniMutex<T> {
       Ok (au) => Err (au),
       Err (au) => Err (au)}}
 
-  pub fn spin_default (&self) -> IniMutexGuard<'_, T> {
-    loop {
-      if let Ok (lock) = self.lock_default() {return lock}
-      spin_yield()}}
+  pub fn spid (&self) -> Result<IniMutexGuard<'_, T>, i8> {
+    self.spidᵗ (unsafe {SPIN_OUT})}
 
-  pub fn spin_defaultᵗ (&self, mut spins: u32) -> Result<IniMutexGuard<'_, T>, i8> {
+  pub fn spidᵗ (&self, mut spins: u32) -> Result<IniMutexGuard<'_, T>, i8> {
     loop {
       match self.lock_default() {
         Ok (lock) => return Ok (lock),
