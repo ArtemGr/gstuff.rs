@@ -17,6 +17,9 @@
 //!   Initializes with `T::default()` if empty, returning a write guard. Spins if downcast fails (for `Any`).
 //! * `fn spin_rd / spinʳ<T> -> Result<AReadGuard<'_, T>, AArcErr>`
 //!   Acquires read lock and downcasts to `T`. Spins if downcast fails (for `Any`).
+//! * `fn spinaʳ / spinaʷ -> Result<A{Read,Write}Guard<'_, dyn Any + Send + Sync>, AArcErr>`
+//!   Fat‑pointer locks: chain `try_map` downcasts under one held lock.
+//!   NB: Upgrading a read lock via `.wr()` is deadlock-prone.
 //! * `fn spin_wr / spinʷ<T> -> Result<AWriteGuard<'_, T>, AArcErr>`
 //!   Acquires exclusive write lock and downcasts to `T`. Spins if downcast fails (for `Any`).
 //! * `fn spin_set / spinˢ<T> (&self, val: T) -> Result<AWriteGuard<'_, T>, AArcErr>`
@@ -367,6 +370,49 @@ impl AArc<dyn Any + Send + Sync> {
 
   pub fn spin_rd<T: 'static> (&self) -> Result<AReadGuard<'_, T>, AArcErr> {
     self.spinʳ (unsafe {SPIN_OUT as i32})}
+
+  /// Read-lock without narrowing to a concrete `T`: returned guard holds the
+  /// `dyn Any + Send + Sync` fat pointer, so callers can `try_map` (downcast)
+  /// — and `.or_else` chain alternative types — *under the same held lock*,
+  /// avoiding the relock-per-type-attempt that `spinʳ::<T>` would force.
+  pub fn spinaʳ (&self, spins: i32)
+  -> Result<AReadGuard<'_, dyn Any + Send + Sync>, AArcErr> {
+    for yieldˀ in SpinIt::new (spins) {
+      let ptr = self.ptr.load (Ordering::Acquire);
+      if !ptr.is_null() {
+        let cb = unsafe {&*ptr};
+        let state = cb.state.load (Ordering::Acquire);
+        if state & WRITE_BIT == 0 && state & EMPTY_BIT == 0 {
+          if (state & READ_MASK) == READ_MASK {return Err (AArcErr::ReaderOverflow)}
+          if cb.state.compare_exchange_weak (state, state + READ_INC, Ordering::Acquire, Ordering::Relaxed) .is_ok() {
+            let data_ref = unsafe {&*cb.data.get()};
+            if let Some (any_box) = data_ref {
+              // Keep the fat (vtable+data) pointer; no downcast performed here.
+              return Ok (AReadGuard {cb, ptr: &**any_box as *const (dyn Any + Send + Sync), _ph: PhantomData})}
+            cb.state.fetch_sub (READ_INC, Ordering::Release);}
+          else {continue}}}
+      if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
+    Err (AArcErr::SpinOut)}
+
+  /// Write counterpart to `spinaʳ`: exclusive lock on the fat‑pointer guard,
+  /// so a single held lock can host wr‑side `try_map` downcasts (and mutate the value).
+  pub fn spinaʷ (&self, spins: i32)
+  -> Result<AWriteGuard<'_, dyn Any + Send + Sync>, AArcErr> {
+    for yieldˀ in SpinIt::new (spins) {
+      let ptr = self.ptr.load (Ordering::Acquire);
+      if !ptr.is_null() {
+        let cb = unsafe {&*ptr};
+        let state = cb.state.load (Ordering::Acquire);
+        if state & WRITE_BIT == 0 && state & READ_MASK == 0 && state & EMPTY_BIT == 0 {
+          if cb.state.compare_exchange_weak (state, state | WRITE_BIT, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+            let data_mut = unsafe {&mut *cb.data.get()};
+            if let Some (any_box) = data_mut {
+              // Keep the fat (vtable+data) pointer; no downcast performed here.
+              return Ok (AWriteGuard {cb, ptr: &mut **any_box as *mut (dyn Any + Send + Sync), _ph: PhantomData})}
+            cb.state.fetch_and (!WRITE_BIT, Ordering::Release);}
+          else {continue}}}
+      if yieldˀ {spin_yield()} else {thread::sleep (Duration::from_millis (30))}}
+    Err (AArcErr::SpinOut)}
 
   pub fn spinʷ<T: 'static> (&self, spins: i32) -> Result<AWriteGuard<'_, T>, AArcErr> {
     // All expensive work (atomic CAS, downcast) happens here.
@@ -928,16 +974,19 @@ mod tests {
 
   trait Animal: Send + Sync + 'static {
     fn speak (&self) -> &'static str;
+    fn react (&mut self) -> &'static str;
     fn as_any (&self) -> &dyn Any;}
 
   struct Dog;
   impl Animal for Dog {
     fn speak (&self) -> &'static str {"woof"}
+    fn react (&mut self) -> &'static str {"wag"}
     fn as_any (&self) -> &dyn Any {self}}
 
   struct Cat;
   impl Animal for Cat {
     fn speak (&self) -> &'static str {"meow"}
+    fn react (&mut self) -> &'static str {"purr"}
     fn as_any (&self) -> &dyn Any {self}}
 
   #[test] fn trait_swapping() {
@@ -1061,23 +1110,24 @@ mod tests {
     assert_eq! (err, "empty");
     assert_eq! (recovered_guard.len(), 0)}
 
-  #[test] fn zoo_spin_two_types() -> Re<()> {
+  #[test] fn zoo_two_types() -> Re<()> {
     let aarc: AArc = AArc::none();
     // animal picked at random, stored type-erased
     let pick_cat = now_ms() & 1 == 0;
     if pick_cat {aarc.spin_set (Cat)?;} else {aarc.spin_set (Dog)?;}
 
-    // try Cat, then Dog; outer loop is the retry (covers transient write-lock races)
-    // Seing how spin_rd blocks on type mismatch until SPIN_OUT,
-    // a bounded attempt is needed to try multiple concrete types sequentially.
-    let mut speech: Option<&'static str> = None;
-    for _ in 0..100 {
-      if let Ok (g) = aarc.spinʳ::<Cat> (1) {speech = Some (g.speak()); break}
-      if let Ok (g) = aarc.spinʳ::<Dog> (1) {speech = Some (g.speak()); break}
-      // Neither type matched yet (or briefly write-locked): yield and retry.
-      spin_yield()}
-    let speech = speech?;
+    // One *write*-lock as `&mut dyn Any` — chained `try_map` downcasts share the single held lock.
+    // We take the write lock up front because we'll mutate via `.react()`; doing `spinaʳ` then
+    // `.wr()` would deadlock if two threads raced (neither releases its READ_INC to let the other upgrade).
+    let lk = aarc.spinaʷ (9)?;
+    let mut animal = lk
+      .try_map (|a| a.downcast_mut::<Cat>().ok_or (())) .map (|g| g.map (|c| c as &mut dyn Animal))
+      .or_else (|(g, _)| g.try_map (|a| a.downcast_mut::<Dog>().ok_or (())) .map (|g| g.map (|d| d as &mut dyn Animal)))
+      .map_err (|_| AArcErr::SpinOut)?;
+    let speech = animal.speak();
     if pick_cat {assert_eq! (speech, "meow")} else {assert_eq! (speech, "woof")}
+    let reaction = animal.react();
+    if pick_cat {assert_eq! (reaction, "purr")} else {assert_eq! (reaction, "wag")}
     Re::Ok(())}
 
   #[test] fn take() {
