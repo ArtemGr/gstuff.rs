@@ -806,12 +806,17 @@ pub fn now_ms() -> u64 {
 ///
 ///     if (now_float() - try_s! (last_modified_sec (&path)) > 600.) {update (&path)}
 pub fn last_modified_sec (path: &dyn AsRef<Path>) -> Result<f64, String> {
+  Ok (ms2sec (try_s! (last_modified_ms (path))))}
+
+/// Last-modified of the file in milliseconds since UNIX epoch.  
+/// Returns 0 if the file does not exists.
+pub fn last_modified_ms (path: &dyn AsRef<Path>) -> Result<u64, String> {
   let meta = match path.as_ref().metadata() {
     Ok (m) => m,
-    Err (ref err) if err.kind() == std::io::ErrorKind::NotFound => return Ok (0.),
+    Err (ref err) if err.kind() == std::io::ErrorKind::NotFound => return Ok (0),
     Err (err) => return ERR! ("{}", err)};
   let lm = try_s! (meta.modified());
-  let lm = duration_to_float (try_s! (lm.duration_since (UNIX_EPOCH)));
+  let lm = duration_to_ms (try_s! (lm.duration_since (UNIX_EPOCH)));
   Ok (lm)}
 
 // Consider targeting a CPU here.
