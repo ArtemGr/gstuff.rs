@@ -1122,6 +1122,17 @@ impl Stat {
     // https://pubs.opengroup.org/onlinepubs/9699919799/functions/unlinkat.html
     let rc = unsafe {libc::unlinkat (self.fd, cname.as_ptr(), flags)};
     if rc == -1 {fail! ((io::Error::last_os_error()))}
+    Re::Ok(())}
+
+  /// rename `fr` to `to`, both relative to the directory fd; atomically replaces existing `to`
+  pub fn rename (&self, fr: &[u8], to: &[u8]) -> Re<()> {
+    let frᶜ = ffi::CString::new (fr)?;
+    let toᶜ = ffi::CString::new (to)?;
+    // https://man.freebsd.org/cgi/man.cgi?query=renameat
+    // https://pubs.opengroup.org/onlinepubs/9699919799/functions/renameat.html
+    // NB: same `self.fd` for both `fromfd` and `tofd`, keeping the rename scoped to this `Dir`
+    let rc = unsafe {libc::renameat (self.fd, frᶜ.as_ptr(), self.fd, toᶜ.as_ptr())};
+    if rc == -1 {fail! ((io::Error::last_os_error()))}
     Re::Ok(())}}
 
 #[cfg(unix)] impl Drop for Dir {
@@ -1152,6 +1163,8 @@ impl Stat {
 /// * `fn unlink (&self, name: &[u8], dir: bool) -> Re<()>`
 ///   Removes a file (`dir=false`) or directory (`dir=true`, `AT_REMOVEDIR`) via `unlinkat`.
 ///   Unlinking during an active `list` may cause entries to be skipped on some filesystems.
+/// * `fn rename (&self, fr: &[u8], to: &[u8]) -> Re<()>`
+///   Renames `fr` to `to` within the directory via `renameat`; atomically replaces existing `to`.
 ///
 /// ### `Stat` Fields and Methods
 /// * `len: i64` - file size in bytes
@@ -1166,27 +1179,67 @@ impl Stat {
   _path: PathBuf}
 
 #[cfg(not(unix))] impl Dir {
-  pub fn new (path: &dyn AsRef<Path>, _flags: i8) -> Re<Dir> {
-    Re::Ok (Dir {_path: path.as_ref().to_path_buf()})}
+  pub fn new (path: &dyn AsRef<Path>, flags: i8) -> Re<Dir> {
+    let path = path.as_ref();
+    // 0b01 (skip O_NOATIME) is a no-op here: Windows has no per-open atime control.
+    if !path.is_dir() {
+      if flags & 0b10 != 0 {  // mkdir if 0b10, mirroring the Unix ENOENT path
+        fs::create_dir (path)?
+      } else {fail! ((path.display()) "] not a directory")}}
+    Re::Ok (Dir {_path: path.to_path_buf()})}
+
+  /// Names arrive as raw bytes (Unix-flavoured API); Windows paths must be UTF-8.
+  fn join (&self, name: &[u8]) -> Re<PathBuf> {
+    let Ok (name) = core::str::from_utf8 (name) else {fail! ("name!utf8")};
+    Re::Ok (self._path.join (name))}
 
   /// `dir.list (&mut |nm| {log! ((b2s (nm))); Re::Ok (true)})?;`
-  pub fn list (&self, _cb: &mut dyn FnMut (&[u8]) -> Re<bool>) -> Re<()> {
-    fail! ("tbd")}
+  pub fn list (&self, cb: &mut dyn FnMut (&[u8]) -> Re<bool>) -> Re<()> {
+    // NB: `read_dir` already skips "." and "..", matching the Unix filter.
+    for en in fs::read_dir (&self._path)? {
+      let en = en?;
+      let name = en.file_name();
+      let Some (name) = name.to_str() else {continue};  // non-UTF-8 names are unrepresentable in this byte-oriented API
+      if !cb (name.as_bytes())? {break}}
+    Re::Ok(())}
 
   /// Open a file in the directory.
   /// 
   /// * `creat` - Make a new file if one does not exists. O_CREAT
   /// * `append` - Seek to end before each `write`. O_APPEND
-  pub fn file (&self, _name: &[u8], _creat: bool, _append: bool) -> Re<fs::File> {
-    fail! ("tbd")}
+  pub fn file (&self, name: &[u8], creat: bool, append: bool) -> Re<fs::File> {
+    let path = self.join (name)?;
+    match fs::OpenOptions::new().read (true) .write (true) .create (creat) .append (append) .open (&path) {
+      Ok (file) => Re::Ok (file),
+      Err (err) => fail! ((String::from_utf8_lossy (name)) "] " (err))}}
 
-  pub fn stat (&self, _name: &[u8]) -> Re<Option<Stat>> {
-    fail! ("tbd")}
+  pub fn stat (&self, name: &[u8]) -> Re<Option<Stat>> {
+    let path = self.join (name)?;
+    // `symlink_metadata` matches the Unix AT_SYMLINK_NOFOLLOW behaviour
+    let md = match fs::symlink_metadata (&path) {
+      Ok (md) => md,
+      Err (err) => {
+        if err.kind() == io::ErrorKind::NotFound {return Re::Ok (None)}
+        fail! ((err))}};
+    // NB: last-modified might be missing or before epoch (cf. the Unix `st_mtime` caveat)
+    let lmc = match md.modified() .ok() .and_then (|lm| lm.duration_since (std::time::UNIX_EPOCH) .ok()) {
+      Some (d) => (d.as_millis() / 10) as u64,
+      None => 0};
+    let ft = md.file_type();
+    Re::Ok (Some (Stat {len: md.len() as i64, lmc, dir: ft.is_dir(), link: ft.is_symlink()}))}
 
   /// On some filesystems, `unlink`ing during a `list` can skip,
   /// [cf.](https://stackoverflow.com/a/14454310/257568)
-  pub fn unlink (&self, _name: &[u8], _dir: bool) -> Re<()> {
-    fail! ("tbd")}}
+  pub fn unlink (&self, name: &[u8], dir: bool) -> Re<()> {
+    let path = self.join (name)?;
+    if dir {fs::remove_dir (&path)?} else {fs::remove_file (&path)?}
+    Re::Ok(())}
+
+  /// rename `fr` to `to`, both relative to the directory; replaces existing `to`
+  pub fn rename (&self, fr: &[u8], to: &[u8]) -> Re<()> {
+    // std uses MoveFileExW with MOVEFILE_REPLACE_EXISTING, matching Unix `rename` for files (not dirs)
+    fs::rename (self.join (fr)?, self.join (to)?)?;
+    Re::Ok(())}}
 
 unsafe impl Send for Dir {}
 unsafe impl Sync for Dir {}
