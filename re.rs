@@ -91,12 +91,20 @@ impl<T> Re<T> {
     Re::Err (err)}
 
   #[inline]
-  pub fn is_ok (self) -> bool {
+  pub fn is_ok (&self) -> bool {
     match self {Re::Ok (_) => true, _ => false}}
+
+  #[inline]
+  pub fn is_err (&self) -> bool {
+    match self {Re::Ok (_) => false, _ => true}}
 
   #[inline]
   pub fn err (self) -> Option<String> {
     match self {Re::Ok (_) => None, Re::Err (e) => Some (e)}}
+
+  #[inline]
+  pub fn ok (self) -> Option<T> {
+    match self {Re::Ok (k) => Some (k), Re::Err (_) => None}}
 
   #[inline]
   #[track_caller]
