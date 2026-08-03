@@ -135,7 +135,10 @@ impl LockAndLoad {
     if ex {oop.write (true) .create (true);}
     let mut file = oop.open (path.as_ref())?;
 
-    let lock = lock (&file, ex)?;
+    let lock = match lock (&file, ex) {
+      Ok (lk) => lk, Err (err) => {
+        let fname = path.as_ref().file_name()?.to_string_lossy();
+        fail! ("!lock ("(fname)"): "(err))}};
 
     let mut mmap = unsafe {MmapOptions::new().map (&file)?};
     if !header.is_empty() {
@@ -852,7 +855,7 @@ pub fn csunesc<P> (fr: &[u8], mut push: P) where P: FnMut (u8) {
     let pid = unsafe {libc::fork()};
     if pid == 0 {
       let Re::Err (err) = super::LockAndLoad::rd (&"lock_ex_not_rd", b"") else {panic! ("rd")};
-      assert! (err.ends_with ("] 11"));  // Locked in parent
+      assert! (err.ends_with ("] !lock (lock_ex_not_rd): 11"), "{}", err);  // Locked in parent
       fs::File::create ("lock_ex_not_rd.rd") .unwrap();  // flag as tested
       std::process::exit (0)
     } else {
@@ -1437,5 +1440,10 @@ impl UStar {
     match u64::from_str_radix (size, 8) {
       Ok (l) => Re::Ok (l),
       Err (err) => fail! ("!size " [size] ": " (err))}}
+
+  /// NUL-terminated name view; ustar names may fill all 100 bytes with no terminator
+  pub fn name (&self) -> &[u8] {
+    let nl = self.name.iter().position (|&ch| ch == 0) .unwrap_or (self.name.len());
+    &self.name[..nl]}
 
   pub fn size (&self) -> Re<u64> {Self::o2u64 (&self.size)}}
